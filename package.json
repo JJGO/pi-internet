@@ -1,0 +1,49 @@
+{
+  "name": "pi-internet",
+  "version": "0.1.0",
+  "description": "Web search, content fetching, and research for Pi — clean markdown, multi-provider search, and a scout subagent that keeps noise out of your context",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "web-search",
+    "web-fetch",
+    "web-research"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JJGO/pi-internet"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "linkedom": "^0.16.0",
+    "turndown": "^7.2.0",
+    "unpdf": "^1.4.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}
