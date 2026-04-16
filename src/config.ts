@@ -30,6 +30,7 @@ export interface PiInternetConfig {
     enabled: boolean;
     maxRepoSizeMB: number;
     clonePath: string;
+    refreshTtlMs: number;
   };
   youtube: {
     enabled: boolean;
@@ -64,6 +65,7 @@ const DEFAULTS: PiInternetConfig = {
     enabled: true,
     maxRepoSizeMB: 350,
     clonePath: join(homedir(), ".cache", "pi-internet", "github-repos"),
+    refreshTtlMs: 300000,
   },
   youtube: {
     enabled: true,
@@ -140,6 +142,7 @@ function mergeWithDefaults(raw: Record<string, unknown>): PiInternetConfig {
       enabled: asBool(get(raw, "github", "enabled")) ?? DEFAULTS.github.enabled,
       maxRepoSizeMB: asPositiveInt(get(raw, "github", "maxRepoSizeMB")) ?? DEFAULTS.github.maxRepoSizeMB,
       clonePath: asString(get(raw, "github", "clonePath")) ?? DEFAULTS.github.clonePath,
+      refreshTtlMs: asPositiveInt(get(raw, "github", "refreshTtlMs")) ?? DEFAULTS.github.refreshTtlMs,
     },
     youtube: {
       enabled: asBool(get(raw, "youtube", "enabled")) ?? DEFAULTS.youtube.enabled,

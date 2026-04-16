@@ -29,6 +29,7 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   }, () => mergeWithDefaults({
     searchProviders: ["brave"],
     reddit: { commentDepth: 2 },
+    github: { refreshTtlMs: 12345 },
     fetch: { includeLinks: true, timeoutMs: 1234 },
   }));
 
@@ -39,6 +40,7 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   assert.equal(config.fetch.includeLinks, true);
   assert.equal(config.fetch.timeoutMs, 1234);
   assert.equal(config.github.enabled, true);
+  assert.equal(config.github.refreshTtlMs, 12345);
 });
 
 test("mergeWithDefaults: invalid values fall back to defaults", () => {
@@ -57,6 +59,7 @@ test("mergeWithDefaults: invalid values fall back to defaults", () => {
   assert.equal(config.reddit.rateLimitMs, 1000);
   assert.equal(config.github.enabled, true);
   assert.equal(config.github.maxRepoSizeMB, 350);
+  assert.equal(config.github.refreshTtlMs, 300000);
   assert.equal(config.fetch.includeLinks, false);
   assert.equal(config.fetch.timeoutMs, 30000);
 });

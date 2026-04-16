@@ -12,10 +12,10 @@
 
 import {
   existsSync, readFileSync, readdirSync, statSync,
-  openSync, readSync, closeSync, mkdirSync, rmSync,
+  openSync, readSync, closeSync, mkdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
-import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
+import { extname, join, resolve as resolvePath } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import type { FetchResult } from "./http.js";
 
@@ -36,6 +36,14 @@ interface GitHubUrlInfo {
   ref?: string;
   path?: string;
   type: "root" | "blob" | "tree";
+  showReadme?: boolean;
+}
+
+function shouldShowReadmePreview(parsed: URL, type: GitHubUrlInfo["type"]): boolean {
+  if (type === "blob") return false;
+  if (parsed.hash.length > 1) return true;
+  const tab = parsed.searchParams.get("tab")?.toLowerCase();
+  return typeof tab === "string" && tab.startsWith("readme");
 }
 
 export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
@@ -56,29 +64,61 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
   if (NON_CODE_SEGMENTS.has(segments[2]?.toLowerCase())) return null;
 
   if (segments.length === 2) {
-    return { owner, repo, type: "root" };
+    return {
+      owner,
+      repo,
+      type: "root",
+      ...(shouldShowReadmePreview(parsed, "root") ? { showReadme: true } : {}),
+    };
   }
 
   const action = segments[2];
   if (action !== "blob" && action !== "tree") return null;
   if (segments.length < 4) {
-    return { owner, repo, type: "root" };
+    return {
+      owner,
+      repo,
+      type: "root",
+      ...(shouldShowReadmePreview(parsed, "root") ? { showReadme: true } : {}),
+    };
   }
 
   const ref = segments[3];
   const pathParts = segments.slice(4);
+  const type = action as "blob" | "tree";
   return {
     owner,
     repo,
     ref,
     path: pathParts.length > 0 ? pathParts.join("/") : "",
-    type: action as "blob" | "tree",
+    type,
+    ...(shouldShowReadmePreview(parsed, type) ? { showReadme: true } : {}),
   };
 }
 
-// ── Clone cache (persists across sessions) ─────────────────────
+// ── Clone cache (persistent on disk, deduped in memory) ─────────
 
-const cloneCache = new Map<string, { localPath: string; promise: Promise<CloneResult> }>();
+const cloneCache = new Map<string, Promise<CloneResult>>();
+const GIT_TIMEOUT_MS = 30_000;
+
+interface CloneMetadata {
+  activePath: string;
+  lastRefreshAt: number;
+  resolvedRef?: string;
+}
+
+interface CloneResult {
+  path: string | null;
+  error?: string;
+  warning?: string;
+}
+
+interface CommandResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
 
 function cacheKey(owner: string, repo: string, ref?: string): string {
   return ref ? `${owner}/${repo}@${ref}` : `${owner}/${repo}`;
@@ -87,6 +127,55 @@ function cacheKey(owner: string, repo: string, ref?: string): string {
 function cloneDir(config: PiInternetConfig, owner: string, repo: string, ref?: string): string {
   const dirName = ref ? `${repo}@${ref}` : repo;
   return join(config.github.clonePath, owner, dirName);
+}
+
+function cloneMetadataPath(config: PiInternetConfig, owner: string, repo: string, ref?: string): string {
+  const fileName = `.pi-internet-${encodeURIComponent(cacheKey(owner, repo, ref))}.json`;
+  return join(config.github.clonePath, owner, fileName);
+}
+
+function uniqueCloneDir(config: PiInternetConfig, owner: string, repo: string, ref?: string): string {
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${cloneDir(config, owner, repo, ref)}.refresh-${suffix}`;
+}
+
+function readCloneMetadata(path: string): CloneMetadata | null {
+  try {
+    if (!existsSync(path)) return null;
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.activePath !== "string" || parsed.activePath.length === 0) return null;
+    if (typeof parsed.lastRefreshAt !== "number" || !Number.isFinite(parsed.lastRefreshAt)) return null;
+    return {
+      activePath: parsed.activePath,
+      lastRefreshAt: parsed.lastRefreshAt,
+      resolvedRef: typeof parsed.resolvedRef === "string" && parsed.resolvedRef.length > 0
+        ? parsed.resolvedRef
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCloneMetadata(path: string, metadata: CloneMetadata): void {
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(metadata, null, 2));
+}
+
+function resolveActiveClonePath(canonicalPath: string, metadata: CloneMetadata | null): string {
+  if (metadata?.activePath && existsSync(join(metadata.activePath, ".git"))) return metadata.activePath;
+  return canonicalPath;
+}
+
+function isCommitRef(ref: string | undefined): boolean {
+  return typeof ref === "string" && /^[0-9a-f]{7,40}$/i.test(ref);
+}
+
+function shouldRefreshClone(metadata: CloneMetadata | null, ref: string | undefined, ttlMs: number): boolean {
+  if (isCommitRef(ref)) return false;
+  if (!metadata) return true;
+  return Date.now() - metadata.lastRefreshAt >= ttlMs;
 }
 
 // ── Clone execution ────────────────────────────────────────────
@@ -103,21 +192,31 @@ async function checkGhAvailable(): Promise<boolean> {
   });
 }
 
-interface CloneResult { path: string | null; error?: string }
-
-function execClone(args: string[], localPath: string, timeoutMs: number, signal?: AbortSignal): Promise<CloneResult> {
+function execCommand(
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
   return new Promise((resolve) => {
-    mkdirSync(join(localPath, ".."), { recursive: true, mode: 0o700 });
-    let stderr = "";
-    const child = execFile(args[0], args.slice(1), { timeout: timeoutMs }, (err) => {
+    const child = execFile(command, args, { cwd, timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
-        try { rmSync(localPath, { recursive: true, force: true }); } catch {}
-        resolve({ path: null, error: stderr.trim() || err.message });
+        resolve({
+          ok: false,
+          stdout: typeof stdout === "string" ? stdout : stdout.toString(),
+          stderr: typeof stderr === "string" ? stderr : stderr.toString(),
+          error: err.message,
+        });
         return;
       }
-      resolve({ path: localPath });
+      resolve({
+        ok: true,
+        stdout: typeof stdout === "string" ? stdout : stdout.toString(),
+        stderr: typeof stderr === "string" ? stderr : stderr.toString(),
+      });
     });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
     if (signal) {
       const onAbort = () => child.kill();
       signal.addEventListener("abort", onAbort, { once: true });
@@ -127,33 +226,77 @@ function execClone(args: string[], localPath: string, timeoutMs: number, signal?
 }
 
 async function cloneRepo(
-  owner: string, repo: string, ref: string | undefined,
-  config: PiInternetConfig, signal?: AbortSignal,
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  config: PiInternetConfig,
+  signal: AbortSignal | undefined,
+  localPath = cloneDir(config, owner, repo, ref),
+  remoteUrl?: string,
 ): Promise<CloneResult> {
-  const localPath = cloneDir(config, owner, repo, ref);
-
-  // If already cloned (from a previous session), reuse it
   if (existsSync(join(localPath, ".git"))) return { path: localPath };
 
   try { rmSync(localPath, { recursive: true, force: true }); } catch {}
 
-  const timeoutMs = 30_000;
-  const hasGh = await checkGhAvailable();
-
-  if (hasGh) {
-    const args = ["gh", "repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"];
-    if (ref) args.push("--branch", ref);
-    return execClone(args, localPath, timeoutMs, signal);
+  if (!remoteUrl) {
+    const hasGh = await checkGhAvailable();
+    if (hasGh) {
+      const args = ["repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"];
+      if (ref) args.push("--branch", ref);
+      const result = await execCommand("gh", args, undefined, GIT_TIMEOUT_MS, signal);
+      if (result.ok) return { path: localPath };
+      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+      return { path: null, error: result.stderr.trim() || result.error || "gh clone failed" };
+    }
   }
 
-  const gitUrl = `https://github.com/${owner}/${repo}.git`;
-  const args = ["git", "clone", "--depth", "1", "--single-branch"];
+  const sourceUrl = remoteUrl ?? `https://github.com/${owner}/${repo}.git`;
+  const args = ["clone", "--depth", "1", "--single-branch"];
   if (ref) args.push("--branch", ref);
-  args.push(gitUrl, localPath);
-  return execClone(args, localPath, timeoutMs, signal);
+  args.push(sourceUrl, localPath);
+  const result = await execCommand("git", args, undefined, GIT_TIMEOUT_MS, signal);
+  if (result.ok) return { path: localPath };
+  try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+  return { path: null, error: result.stderr.trim() || result.error || "git clone failed" };
 }
 
-// ── Repo size check (GitHub API, no auth needed for public repos) ──
+async function getOriginUrl(localPath: string, signal?: AbortSignal): Promise<string | undefined> {
+  const result = await execCommand("git", ["remote", "get-url", "origin"], localPath, GIT_TIMEOUT_MS, signal);
+  if (!result.ok) return undefined;
+  const originUrl = result.stdout.trim();
+  return originUrl.length > 0 ? originUrl : undefined;
+}
+
+async function resolveCurrentRef(localPath: string, signal?: AbortSignal): Promise<string | undefined> {
+  const result = await execCommand("git", ["branch", "--show-current"], localPath, GIT_TIMEOUT_MS, signal);
+  if (!result.ok) return undefined;
+  const branch = result.stdout.trim();
+  return branch.length > 0 ? branch : undefined;
+}
+
+async function isWorkingTreeDirty(localPath: string, signal?: AbortSignal): Promise<boolean | null> {
+  const result = await execCommand("git", ["status", "--porcelain"], localPath, GIT_TIMEOUT_MS, signal);
+  if (!result.ok) return null;
+  return result.stdout.trim().length > 0;
+}
+
+async function refreshClone(localPath: string, ref: string | undefined, signal?: AbortSignal): Promise<CloneResult> {
+  const targetRef = ref ?? await resolveCurrentRef(localPath, signal) ?? "HEAD";
+
+  // We reset to the remote target instead of using git pull so the cache stays
+  // deterministic and never accumulates merge commits from background refreshes.
+  const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", targetRef], localPath, GIT_TIMEOUT_MS, signal);
+  if (!fetchResult.ok) {
+    return { path: null, error: fetchResult.stderr.trim() || fetchResult.error || `git fetch ${targetRef} failed` };
+  }
+
+  const resetResult = await execCommand("git", ["reset", "--hard", "FETCH_HEAD"], localPath, GIT_TIMEOUT_MS, signal);
+  if (!resetResult.ok) {
+    return { path: null, error: resetResult.stderr.trim() || resetResult.error || "git reset --hard FETCH_HEAD failed" };
+  }
+
+  return { path: localPath };
+}
 
 async function checkRepoSize(owner: string, repo: string): Promise<number | null> {
   try {
@@ -167,6 +310,95 @@ async function checkRepoSize(owner: string, repo: string): Promise<number | null
   } catch {
     return null;
   }
+}
+
+async function ensureRepoReady(
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  config: PiInternetConfig,
+  signal?: AbortSignal,
+): Promise<CloneResult> {
+  const key = cacheKey(owner, repo, ref);
+  const cached = cloneCache.get(key);
+  if (cached) return cached;
+
+  const operation = (async () => {
+    const canonicalPath = cloneDir(config, owner, repo, ref);
+    const metadataPath = cloneMetadataPath(config, owner, repo, ref);
+    const metadata = readCloneMetadata(metadataPath);
+    const activePath = resolveActiveClonePath(canonicalPath, metadata);
+
+    if (existsSync(join(activePath, ".git"))) {
+      if (!shouldRefreshClone(metadata, ref, config.github.refreshTtlMs)) {
+        return { path: activePath };
+      }
+
+      const dirty = await isWorkingTreeDirty(activePath, signal);
+      if (dirty === true || dirty === null) {
+        const freshPath = uniqueCloneDir(config, owner, repo, ref);
+        const originUrl = await getOriginUrl(activePath, signal);
+        const cloned = await cloneRepo(owner, repo, ref, config, signal, freshPath, originUrl);
+        if (!cloned.path) {
+          return {
+            path: activePath,
+            warning: `GitHub refresh failed (${cloned.error || "clone failed"}); showing cached snapshot.`,
+          };
+        }
+
+        const resolvedRef = ref ?? await resolveCurrentRef(cloned.path, signal) ?? metadata?.resolvedRef;
+        writeCloneMetadata(metadataPath, {
+          activePath: cloned.path,
+          lastRefreshAt: Date.now(),
+          ...(resolvedRef ? { resolvedRef } : {}),
+        });
+        return { path: cloned.path };
+      }
+
+      const refreshed = await refreshClone(activePath, ref ?? metadata?.resolvedRef, signal);
+      if (!refreshed.path) {
+        return {
+          path: activePath,
+          warning: `GitHub refresh failed (${refreshed.error || "refresh failed"}); showing cached snapshot.`,
+        };
+      }
+
+      const resolvedRef = ref ?? await resolveCurrentRef(activePath, signal) ?? metadata?.resolvedRef;
+      writeCloneMetadata(metadataPath, {
+        activePath,
+        lastRefreshAt: Date.now(),
+        ...(resolvedRef ? { resolvedRef } : {}),
+      });
+      return { path: activePath };
+    }
+
+    const sizeKB = await checkRepoSize(owner, repo);
+    if (sizeKB !== null) {
+      const sizeMB = sizeKB / 1024;
+      if (sizeMB > config.github.maxRepoSizeMB) {
+        return {
+          path: null,
+          error: `Repo too large (${Math.round(sizeMB)}MB). Use web_search or fetch specific file URLs instead.`,
+        };
+      }
+    }
+
+    const cloned = await cloneRepo(owner, repo, ref, config, signal, canonicalPath);
+    if (!cloned.path) return cloned;
+
+    const resolvedRef = ref ?? await resolveCurrentRef(cloned.path, signal);
+    writeCloneMetadata(metadataPath, {
+      activePath: cloned.path,
+      lastRefreshAt: Date.now(),
+      ...(resolvedRef ? { resolvedRef } : {}),
+    });
+    return cloned;
+  })().finally(() => {
+    cloneCache.delete(key);
+  });
+
+  cloneCache.set(key, operation);
+  return operation;
 }
 
 // ── Content generation ─────────────────────────────────────────
@@ -241,13 +473,21 @@ function buildTree(rootPath: string): string {
   return entries.join("\n");
 }
 
-function readReadme(localPath: string): string | null {
+interface ReadmeResult {
+  name: string;
+  content: string;
+}
+
+function readReadme(localPath: string): ReadmeResult | null {
   for (const name of ["README.md", "readme.md", "README", "README.txt", "README.rst"]) {
     const p = join(localPath, name);
     if (!existsSync(p)) continue;
     try {
       const content = readFileSync(p, "utf-8");
-      return content.length > 8192 ? content.slice(0, 8192) + "\n\n[README truncated at 8K chars]" : content;
+      return {
+        name,
+        content: content.length > 8192 ? content.slice(0, 8192) + "\n\n[README truncated at 8K chars]" : content,
+      };
     } catch { continue; }
   }
   return null;
@@ -258,7 +498,7 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 
   if (info.type === "root") {
     const readme = readReadme(localPath);
-    if (readme) lines.push("## README.md", readme, "");
+    if (readme) lines.push(`## ${readme.name}`, readme.content, "");
     lines.push("## Structure", buildTree(localPath), "");
     lines.push("Use `read` and `bash` tools at the path above to explore further.");
     return lines.join("\n");
@@ -278,6 +518,13 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
           lines.push(s.isDirectory() ? `  ${item}/` : `  ${item}  (${formatFileSize(s.size)})`);
         }
       } catch { lines.push("  (directory not readable)"); }
+
+      if (info.showReadme) {
+        const readme = readReadme(fullPath);
+        if (readme) {
+          lines.push("", `## ${readme.name}`, readme.content);
+        }
+      }
     }
     lines.push("", "Use `read` and `bash` tools at the path above to explore further.");
     return lines.join("\n");
@@ -315,47 +562,23 @@ export async function fetchGitHub(
   if (!info) return null; // Not a code URL → fall through to HTTP
 
   const { owner, repo } = info;
-  const key = cacheKey(owner, repo, info.ref);
-
-  // Check cache
-  const cached = cloneCache.get(key);
-  if (cached) {
-    const result = await cached.promise;
-    if (result.path) {
-      const content = generateContent(result.path, info);
-      return { url, title: `${owner}/${repo}`, content, error: null };
-    }
-    return { url, title: "", content: "", error: result.error || "Clone failed (cached)" };
-  }
-
-  // Size check for large repos
-  const sizeKB = await checkRepoSize(owner, repo);
-  if (sizeKB !== null) {
-    const sizeMB = sizeKB / 1024;
-    if (sizeMB > config.github.maxRepoSizeMB) {
-      return {
-        url,
-        title: `${owner}/${repo}`,
-        content: `Repository is ${Math.round(sizeMB)}MB (threshold: ${config.github.maxRepoSizeMB}MB). Too large to clone.`,
-        error: `Repo too large (${Math.round(sizeMB)}MB). Use web_search or fetch specific file URLs instead.`,
-      };
-    }
-  }
-
-  // Clone
-  const promise = cloneRepo(owner, repo, info.ref, config, signal);
-  const localPath = cloneDir(config, owner, repo, info.ref);
-  cloneCache.set(key, { localPath, promise });
-
-  const result = await promise;
+  const result = await ensureRepoReady(owner, repo, info.ref, config, signal);
   if (!result.path) {
-    cloneCache.delete(key);
-    const errMsg = result.error ? `Clone failed: ${result.error}` : "Failed to clone repository";
-    return { url, title: "", content: "", error: errMsg };
+    return {
+      url,
+      title: `${owner}/${repo}`,
+      content: "",
+      error: result.error || "Failed to prepare repository clone",
+    };
   }
 
   const content = generateContent(result.path, info);
-  return { url, title: `${owner}/${repo}`, content, error: null };
+  return {
+    url,
+    title: `${owner}/${repo}`,
+    content,
+    error: result.warning ?? null,
+  };
 }
 
 /** Clear the in-memory clone cache. Called on session_shutdown. */

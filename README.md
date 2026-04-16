@@ -83,7 +83,8 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
     "github": {
       "enabled": true,
       "maxRepoSizeMB": 350,
-      "clonePath": "/absolute/path/to/github-repos"
+      "clonePath": "/absolute/path/to/github-repos",
+      "refreshTtlMs": 300000
     },
     "youtube": {
       "enabled": true
@@ -97,6 +98,8 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
 ```
 
 `github.clonePath` defaults to `~/.cache/pi-internet/github-repos` when omitted.
+
+`github.refreshTtlMs` defaults to 300000 (5 minutes). Cached repos are refreshed with `git fetch` + hard reset when they are older than the TTL. If the cached clone has local edits, pi-internet keeps it untouched and creates a fresh sibling clone instead.
 
 `piWebSurf` is still accepted as a legacy config key for backward compatibility, but `piInternet` is preferred.
 
