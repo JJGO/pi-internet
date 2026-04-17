@@ -194,7 +194,7 @@ export async function fetchUrl(
     // 5. PDF (by URL extension — content-type check happens in httpFetch)
     if (isPdfUrl(url)) {
       if (!pdfModule) pdfModule = await import("./pdf.js");
-      result = await pdfModule.fetchPdf(url, options.signal);
+      result = await pdfModule.fetchPdf(url, options.signal, config.fetch.socksProxy);
       return finalize(result);
     }
 
@@ -203,6 +203,7 @@ export async function fetchUrl(
       timeoutMs: config.fetch.timeoutMs,
       selector: options.selector,
       includeLinks: options.includeLinks ?? config.fetch.includeLinks,
+      socksProxy: config.fetch.socksProxy,
       signal: options.signal,
     });
     return finalize(result);

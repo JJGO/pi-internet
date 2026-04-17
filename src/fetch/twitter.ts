@@ -8,6 +8,7 @@
 
 import { parse, getText, getAttr, normalizeText } from "../util/dom.js";
 import { combinedSignal } from "../util/signal.js";
+import { fetchWithProxy } from "../util/proxy.js";
 import type { PiInternetConfig } from "../config.js";
 import type { FetchResult } from "./http.js";
 import type { FetchUrlOptions } from "./router.js";
@@ -154,9 +155,11 @@ export async function fetchTwitter(
   const baseUrl = `https://${proxyHost}`;
   const verbose = options.verbose ?? false;
 
-  const res = await fetch(proxyUrl, {
+  const res = await fetchWithProxy(proxyUrl, {
     headers: { "User-Agent": "pi-internet/0.1" },
     signal: combinedSignal(options.signal, 15_000),
+  }, {
+    socksProxy: config.fetch.socksProxy,
   });
 
   if (!res.ok) throw new Error(`Nitter proxy returned HTTP ${res.status}`);

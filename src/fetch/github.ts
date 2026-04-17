@@ -17,6 +17,7 @@ import {
 import { execFile } from "node:child_process";
 import { extname, join, resolve as resolvePath } from "node:path";
 import type { PiInternetConfig } from "../config.js";
+import { applySocksProxyEnv, fetchWithProxy } from "../util/proxy.js";
 import type { FetchResult } from "./http.js";
 
 // ── URL parsing ────────────────────────────────────────────────
@@ -198,9 +199,10 @@ function execCommand(
   cwd: string | undefined,
   timeoutMs: number,
   signal?: AbortSignal,
+  env?: NodeJS.ProcessEnv,
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = execFile(command, args, { cwd, timeout: timeoutMs }, (err, stdout, stderr) => {
+    const child = execFile(command, args, { cwd, timeout: timeoutMs, env }, (err, stdout, stderr) => {
       if (err) {
         resolve({
           ok: false,
@@ -238,12 +240,14 @@ async function cloneRepo(
 
   try { rmSync(localPath, { recursive: true, force: true }); } catch {}
 
+  const env = applySocksProxyEnv(process.env, { socksProxy: config.fetch.socksProxy });
+
   if (!remoteUrl) {
     const hasGh = await checkGhAvailable();
     if (hasGh) {
       const args = ["repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"];
       if (ref) args.push("--branch", ref);
-      const result = await execCommand("gh", args, undefined, GIT_TIMEOUT_MS, signal);
+      const result = await execCommand("gh", args, undefined, GIT_TIMEOUT_MS, signal, env);
       if (result.ok) return { path: localPath };
       try { rmSync(localPath, { recursive: true, force: true }); } catch {}
       return { path: null, error: result.stderr.trim() || result.error || "gh clone failed" };
@@ -254,7 +258,7 @@ async function cloneRepo(
   const args = ["clone", "--depth", "1", "--single-branch"];
   if (ref) args.push("--branch", ref);
   args.push(sourceUrl, localPath);
-  const result = await execCommand("git", args, undefined, GIT_TIMEOUT_MS, signal);
+  const result = await execCommand("git", args, undefined, GIT_TIMEOUT_MS, signal, env);
   if (result.ok) return { path: localPath };
   try { rmSync(localPath, { recursive: true, force: true }); } catch {}
   return { path: null, error: result.stderr.trim() || result.error || "git clone failed" };
@@ -280,12 +284,18 @@ async function isWorkingTreeDirty(localPath: string, signal?: AbortSignal): Prom
   return result.stdout.trim().length > 0;
 }
 
-async function refreshClone(localPath: string, ref: string | undefined, signal?: AbortSignal): Promise<CloneResult> {
+async function refreshClone(
+  localPath: string,
+  ref: string | undefined,
+  socksProxy: string | null,
+  signal?: AbortSignal,
+): Promise<CloneResult> {
   const targetRef = ref ?? await resolveCurrentRef(localPath, signal) ?? "HEAD";
 
   // We reset to the remote target instead of using git pull so the cache stays
   // deterministic and never accumulates merge commits from background refreshes.
-  const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", targetRef], localPath, GIT_TIMEOUT_MS, signal);
+  const env = applySocksProxyEnv(process.env, { socksProxy });
+  const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", targetRef], localPath, GIT_TIMEOUT_MS, signal, env);
   if (!fetchResult.ok) {
     return { path: null, error: fetchResult.stderr.trim() || fetchResult.error || `git fetch ${targetRef} failed` };
   }
@@ -298,11 +308,13 @@ async function refreshClone(localPath: string, ref: string | undefined, signal?:
   return { path: localPath };
 }
 
-async function checkRepoSize(owner: string, repo: string): Promise<number | null> {
+async function checkRepoSize(owner: string, repo: string, socksProxy: string | null): Promise<number | null> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+    const res = await fetchWithProxy(`https://api.github.com/repos/${owner}/${repo}`, {
       headers: { Accept: "application/vnd.github.v3+json", "User-Agent": "pi-internet" },
       signal: AbortSignal.timeout(10_000),
+    }, {
+      socksProxy,
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -355,7 +367,7 @@ async function ensureRepoReady(
         return { path: cloned.path };
       }
 
-      const refreshed = await refreshClone(activePath, ref ?? metadata?.resolvedRef, signal);
+      const refreshed = await refreshClone(activePath, ref ?? metadata?.resolvedRef, config.fetch.socksProxy, signal);
       if (!refreshed.path) {
         return {
           path: activePath,
@@ -372,7 +384,7 @@ async function ensureRepoReady(
       return { path: activePath };
     }
 
-    const sizeKB = await checkRepoSize(owner, repo);
+    const sizeKB = await checkRepoSize(owner, repo, config.fetch.socksProxy);
     if (sizeKB !== null) {
       const sizeMB = sizeKB / 1024;
       if (sizeMB > config.github.maxRepoSizeMB) {

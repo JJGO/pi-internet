@@ -6,8 +6,8 @@
  *
  * Config lives in Pi's settings files (~/.pi/agent/settings.json or .pi/settings.json)
  * under the `piInternet` key. The legacy `piWebSurf` key is also supported
- * for backward compatibility. API keys and optional social proxy hosts can
- * come from environment variables.
+ * for backward compatibility. API keys, optional social proxy hosts, and
+ * the optional SOCKS proxy can come from environment variables.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -38,6 +38,7 @@ export interface PiInternetConfig {
   fetch: {
     includeLinks: boolean;
     timeoutMs: number;
+    socksProxy: string | null;
   };
 }
 
@@ -47,6 +48,7 @@ const CURRENT_CONFIG_KEY = "piInternet";
 const LEGACY_CONFIG_KEY = "piWebSurf";
 const REDLIB_PROXY_ENV = "PI_INTERNET_REDLIB_PROXY";
 const NITTER_PROXY_ENV = "PI_INTERNET_NITTER_PROXY";
+const SOCKS_PROXY_ENV = "PI_INTERNET_SOCKS_PROXY";
 const warnedConfigPaths = new Set<string>();
 
 const DEFAULTS: PiInternetConfig = {
@@ -73,6 +75,7 @@ const DEFAULTS: PiInternetConfig = {
   fetch: {
     includeLinks: false,
     timeoutMs: 30000,
+    socksProxy: null,
   },
 };
 
@@ -150,6 +153,7 @@ function mergeWithDefaults(raw: Record<string, unknown>): PiInternetConfig {
     fetch: {
       includeLinks: asBool(get(raw, "fetch", "includeLinks")) ?? DEFAULTS.fetch.includeLinks,
       timeoutMs: asPositiveInt(get(raw, "fetch", "timeoutMs")) ?? DEFAULTS.fetch.timeoutMs,
+      socksProxy: resolveProxyValue(SOCKS_PROXY_ENV, get(raw, "fetch", "socksProxy")),
     },
   };
 }
@@ -198,6 +202,10 @@ function asString(val: unknown): string | undefined {
 }
 
 function resolveProxyHost(envName: string, rawValue: unknown): string | null {
+  return resolveProxyValue(envName, rawValue);
+}
+
+function resolveProxyValue(envName: string, rawValue: unknown): string | null {
   return asString(process.env[envName]) ?? asString(rawValue) ?? null;
 }
 

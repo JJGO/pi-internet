@@ -12,6 +12,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import type { FetchResult } from "./http.js";
 import { combinedSignal } from "../util/signal.js";
+import { fetchWithProxy } from "../util/proxy.js";
 
 const DEFAULT_OUTPUT_DIR = join(homedir(), "Downloads");
 const DEFAULT_MAX_PAGES = 100;
@@ -20,12 +21,18 @@ const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20MB
 /**
  * Fetch a PDF from a URL, extract text, return markdown.
  */
-export async function fetchPdf(url: string, signal?: AbortSignal): Promise<FetchResult> {
+export async function fetchPdf(
+  url: string,
+  signal?: AbortSignal,
+  socksProxy?: string | null,
+): Promise<FetchResult> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithProxy(url, {
       signal: combinedSignal(signal, 60_000),
       headers: { "User-Agent": "pi-internet/0.1" },
+    }, {
+      socksProxy,
     });
   } catch (err) {
     return { url, title: "", content: "", error: `Failed to fetch PDF: ${err instanceof Error ? err.message : err}` };

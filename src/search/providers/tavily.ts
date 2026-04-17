@@ -6,6 +6,7 @@
  */
 
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { fetchWithProxy } from "../../util/proxy.js";
 
 export const tavily: SearchProvider = {
   name: "tavily",
@@ -25,7 +26,7 @@ export const tavily: SearchProvider = {
       include_answer: false,
     };
 
-    const res = await fetch("https://api.tavily.com/search", {
+    const res = await fetchWithProxy("https://api.tavily.com/search", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),

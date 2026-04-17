@@ -11,6 +11,7 @@
 
 import type { FetchResult } from "./http.js";
 import { combinedSignal } from "../util/signal.js";
+import { fetchWithProxy } from "../util/proxy.js";
 import { extractHeadingTitle } from "../util/markdown.js";
 
 const JINA_READER_BASE = "https://r.jina.ai/";
@@ -19,16 +20,19 @@ const JINA_TIMEOUT_MS = 30_000;
 export async function extractWithJinaReader(
   url: string,
   signal?: AbortSignal,
+  socksProxy?: string | null,
 ): Promise<FetchResult | null> {
   const jinaUrl = JINA_READER_BASE + url;
 
   try {
-    const res = await fetch(jinaUrl, {
+    const res = await fetchWithProxy(jinaUrl, {
       headers: {
         Accept: "text/markdown",
         "X-No-Cache": "true",
       },
       signal: combinedSignal(signal, JINA_TIMEOUT_MS),
+    }, {
+      socksProxy,
     });
 
     if (!res.ok) return null;

@@ -20,6 +20,7 @@ import { setKagiToken, getKagiToken } from "./search/providers/kagi.js";
 import { fetchUrl, resetProxyState } from "./fetch/router.js";
 import { clearCloneCache } from "./fetch/github.js";
 import { runScout, resolveScoutModel, buildScoutPrompt } from "./research/scout.js";
+import { resetSocksProxyDispatchers } from "./util/proxy.js";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
@@ -55,6 +56,7 @@ export default function piInternet(pi: ExtensionAPI) {
   // /toggle-research is intentionally session-only.
   pi.on("session_start", async () => {
     resetProxyState();
+    await resetSocksProxyDispatchers();
     researchEnabled = false;
     const active = pi.getActiveTools();
     if (active.includes("web_research")) {
@@ -65,6 +67,7 @@ export default function piInternet(pi: ExtensionAPI) {
   // Clean up on session shutdown
   pi.on("session_shutdown", async () => {
     resetProxyState();
+    await resetSocksProxyDispatchers();
     clearCloneCache();
     researchEnabled = false;
     currentProvider = undefined;

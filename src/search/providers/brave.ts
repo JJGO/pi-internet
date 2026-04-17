@@ -6,6 +6,7 @@
  */
 
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { fetchWithProxy } from "../../util/proxy.js";
 
 export const brave: SearchProvider = {
   name: "brave",
@@ -24,7 +25,7 @@ export const brave: SearchProvider = {
     });
     if (options.freshness) params.set("freshness", freshnessMap[options.freshness] ?? options.freshness);
 
-    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+    const res = await fetchWithProxy(`https://api.search.brave.com/res/v1/web/search?${params}`, {
       headers: {
         "X-Subscription-Token": apiKey,
         Accept: "application/json",

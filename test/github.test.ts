@@ -33,6 +33,7 @@ function makeConfig(clonePath: string): PiInternetConfig {
     fetch: {
       includeLinks: false,
       timeoutMs: 30_000,
+      socksProxy: null,
     },
   };
 }

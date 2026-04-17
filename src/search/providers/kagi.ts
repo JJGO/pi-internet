@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseHTML } from "linkedom";
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { fetchWithProxy } from "../../util/proxy.js";
 
 const CONFIG_FILE = join(homedir(), ".pi", "kagi-search.json");
 const TOKEN_FILE = join(homedir(), ".kagi_session_token");
@@ -64,7 +65,7 @@ export const kagi: SearchProvider = {
     if (!token) throw new Error("Kagi session token not configured");
 
     const limit = options.numResults ?? 10;
-    const res = await fetch(
+    const res = await fetchWithProxy(
       `https://kagi.com/html/search?q=${encodeURIComponent(options.query)}`,
       {
         headers: {

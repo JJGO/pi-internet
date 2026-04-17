@@ -15,6 +15,7 @@ import { extractRSCContent } from "./rsc.js";
 import { extractWithJinaReader } from "./jina.js";
 import { extractPdfFromBuffer } from "./pdf.js";
 import { combinedSignal } from "../util/signal.js";
+import { fetchWithProxy } from "../util/proxy.js";
 import {
   truncateHead,
   DEFAULT_MAX_BYTES,
@@ -39,6 +40,7 @@ export interface HttpFetchOptions {
   timeoutMs?: number;
   selector?: string;
   includeLinks?: boolean;
+  socksProxy?: string | null;
   signal?: AbortSignal;
 }
 
@@ -93,7 +95,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
 
   let response: Response;
   try {
-    response = await fetch(fetchUrl, {
+    response = await fetchWithProxy(fetchUrl, {
       signal,
       headers: {
         "User-Agent": USER_AGENT,
@@ -101,6 +103,8 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
         "Accept-Language": "en-US,en;q=0.9",
       },
       redirect: "follow",
+    }, {
+      socksProxy: options.socksProxy,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -167,7 +171,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   }
 
   // Jina Reader fallback for JS-rendered / blocked pages
-  const jinaResult = await extractWithJinaReader(url, options.signal);
+  const jinaResult = await extractWithJinaReader(url, options.signal, options.socksProxy);
   if (jinaResult) {
     return jinaResult;
   }

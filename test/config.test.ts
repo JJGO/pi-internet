@@ -26,11 +26,12 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   const config = withEnv({
     PI_INTERNET_REDLIB_PROXY: undefined,
     PI_INTERNET_NITTER_PROXY: undefined,
+    PI_INTERNET_SOCKS_PROXY: undefined,
   }, () => mergeWithDefaults({
     searchProviders: ["brave"],
     reddit: { commentDepth: 2 },
     github: { refreshTtlMs: 12345 },
-    fetch: { includeLinks: true, timeoutMs: 1234 },
+    fetch: { includeLinks: true, timeoutMs: 1234, socksProxy: "socks5h://127.0.0.1:25344" },
   }));
 
   assert.deepEqual(config.searchProviders, ["brave"]);
@@ -39,6 +40,7 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   assert.equal(config.reddit.proxyHost, null);
   assert.equal(config.fetch.includeLinks, true);
   assert.equal(config.fetch.timeoutMs, 1234);
+  assert.equal(config.fetch.socksProxy, "socks5h://127.0.0.1:25344");
   assert.equal(config.github.enabled, true);
   assert.equal(config.github.refreshTtlMs, 12345);
 });
@@ -47,11 +49,12 @@ test("mergeWithDefaults: invalid values fall back to defaults", () => {
   const config = withEnv({
     PI_INTERNET_REDLIB_PROXY: undefined,
     PI_INTERNET_NITTER_PROXY: undefined,
+    PI_INTERNET_SOCKS_PROXY: undefined,
   }, () => mergeWithDefaults({
     searchProviders: [],
     reddit: { commentDepth: -1, rateLimitMs: 0 },
     github: { enabled: "yes", maxRepoSizeMB: NaN },
-    fetch: { includeLinks: "true", timeoutMs: -50 },
+    fetch: { includeLinks: "true", timeoutMs: -50, socksProxy: 1234 },
   } as unknown as Record<string, unknown>));
 
   assert.deepEqual(config.searchProviders, ["brave", "kagi"]);
@@ -62,19 +65,23 @@ test("mergeWithDefaults: invalid values fall back to defaults", () => {
   assert.equal(config.github.refreshTtlMs, 300000);
   assert.equal(config.fetch.includeLinks, false);
   assert.equal(config.fetch.timeoutMs, 30000);
+  assert.equal(config.fetch.socksProxy, null);
 });
 
-test("mergeWithDefaults: social proxy env vars override config", () => {
+test("mergeWithDefaults: proxy env vars override config", () => {
   const config = withEnv({
     PI_INTERNET_REDLIB_PROXY: "redlib.internal.example",
     PI_INTERNET_NITTER_PROXY: "nitter.internal.example",
+    PI_INTERNET_SOCKS_PROXY: "socks5h://127.0.0.1:25344",
   }, () => mergeWithDefaults({
     reddit: { proxyHost: "ignored.example" },
     twitter: { proxyHost: "also-ignored.example" },
+    fetch: { socksProxy: "socks5://10.0.0.1:1080" },
   }));
 
   assert.equal(config.reddit.proxyHost, "redlib.internal.example");
   assert.equal(config.twitter.proxyHost, "nitter.internal.example");
+  assert.equal(config.fetch.socksProxy, "socks5h://127.0.0.1:25344");
 });
 
 test("mergeObjects: recursively merges nested config objects", () => {

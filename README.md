@@ -91,11 +91,14 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
     },
     "fetch": {
       "includeLinks": false,
-      "timeoutMs": 30000
+      "timeoutMs": 30000,
+      "socksProxy": "socks5h://127.0.0.1:25344"
     }
   }
 }
 ```
+
+`fetch.socksProxy` is optional and disabled by default. When set, pi-internet routes its outbound HTTP requests through that SOCKS proxy.
 
 `github.clonePath` defaults to `~/.cache/pi-internet/github-repos` when omitted.
 
@@ -115,14 +118,17 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
 
 Kagi also checks `~/.pi/kagi-search.json` and `~/.kagi_session_token` as fallbacks.
 
-#### Optional social proxies
+#### Optional proxies
 
 | Feature | Env Var | Value |
 |---------|---------|-------|
+| Package-wide SOCKS proxy for outbound HTTP | `PI_INTERNET_SOCKS_PROXY` | Full proxy URL, e.g. `socks5h://127.0.0.1:25344` |
 | Reddit via Redlib-compatible proxy | `PI_INTERNET_REDLIB_PROXY` | Hostname only, e.g. `redlib.example.com` |
 | Twitter/X via Nitter-compatible proxy | `PI_INTERNET_NITTER_PROXY` | Hostname only, e.g. `nitter.example.com` |
 
-If these env vars are unset, Reddit/X URLs fall through to regular HTTP fetching.
+`PI_INTERNET_SOCKS_PROXY` overrides `piInternet.fetch.socksProxy` when both are set.
+
+If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fall through to regular HTTP fetching.
 
 ### External dependencies
 
