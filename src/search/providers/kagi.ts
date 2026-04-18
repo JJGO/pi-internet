@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseHTML } from "linkedom";
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
 
 const CONFIG_FILE = join(homedir(), ".pi", "kagi-search.json");
@@ -62,7 +63,13 @@ export const kagi: SearchProvider = {
 
   async search(options: SearchOptions): Promise<SearchResult[]> {
     const token = getKagiToken();
-    if (!token) throw new Error("Kagi session token not configured");
+    if (!token) {
+      throw new SearchProviderError({
+        provider: "kagi",
+        message: "Kagi session token not configured",
+        code: "auth",
+      });
+    }
 
     const limit = options.numResults ?? 10;
     const res = await fetchWithProxy(
@@ -78,9 +85,19 @@ export const kagi: SearchProvider = {
 
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
-        throw new Error("Invalid or expired Kagi session token");
+        throw new SearchProviderError({
+          provider: "kagi",
+          message: "Invalid or expired Kagi session token",
+          statusCode: res.status,
+          code: "auth",
+        });
       }
-      throw new Error(`Kagi HTTP ${res.status}: ${res.statusText}`);
+      throw new SearchProviderError({
+        provider: "kagi",
+        message: `Kagi HTTP ${res.status}: ${res.statusText}`,
+        statusCode: res.status,
+        code: "http",
+      });
     }
 
     const html = await res.text();

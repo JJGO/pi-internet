@@ -25,10 +25,12 @@ Search for "typescript monorepo best practices 2025"
 ```
 
 - **Primary providers** run in parallel (default: Brave + Kagi)
-- **Fallback providers** tried if all primaries fail (default: Tavily)
-- Override per-call with `provider: "brave"` / `"kagi"` / `"tavily"`
+- **Fallback providers** fill gaps when primaries fail or return too few unique results (default: Tavily)
+- **Brave rate-limit / usage-limit responses** disable Brave for the rest of the current session
+- Override per-call with `provider: "brave"` / `"kagi"` / `"tavily"` — explicit provider selection does not auto-fallback
 - Default: 10 results (max 20) — each provider returns 10, merged and deduplicated
 - Freshness filter: `day`, `week`, `month`, `year`
+- Concise warnings are surfaced when a provider is disabled or a fallback had to fill results
 
 ### `fetch_url`
 
@@ -141,7 +143,7 @@ If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fal
 
 | Command | Description |
 |---------|-------------|
-| `/search-providers` | List configured providers and availability |
+| `/search-providers` | List configured providers, availability, and session-disabled status |
 | `/kagi-login` | Set Kagi session token interactively |
 | `/toggle-research` | Show/hide the `web_research` tool for the current session |
 
@@ -151,7 +153,8 @@ If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fal
 web_search(query)
   → Run primary providers in parallel (Brave + Kagi)
   → Merge: deduplicate by URL, keep richer snippet
-  → If all fail → try fallback providers (Tavily)
+  → If merged results are short → try fallback providers (Tavily) to fill the gap
+  → If Brave returns a rate-limit or usage-limit response → disable Brave for the rest of the session
 
 fetch_url(url)
   → Reddit?    Configured Redlib-compatible proxy → parse posts/comments → render markdown

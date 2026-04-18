@@ -6,6 +6,7 @@
  */
 
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
 
 export const tavily: SearchProvider = {
@@ -17,7 +18,13 @@ export const tavily: SearchProvider = {
 
   async search(options: SearchOptions): Promise<SearchResult[]> {
     const apiKey = process.env.TAVILY_API_KEY;
-    if (!apiKey) throw new Error("TAVILY_API_KEY not set");
+    if (!apiKey) {
+      throw new SearchProviderError({
+        provider: "tavily",
+        message: "TAVILY_API_KEY not set",
+        code: "auth",
+      });
+    }
 
     const body: Record<string, unknown> = {
       query: options.query,
@@ -33,7 +40,14 @@ export const tavily: SearchProvider = {
       signal: options.signal,
     });
 
-    if (!res.ok) throw new Error(`Tavily API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      throw new SearchProviderError({
+        provider: "tavily",
+        message: `Tavily API error (${res.status}): ${await res.text()}`,
+        statusCode: res.status,
+        code: "http",
+      });
+    }
 
     const data = await res.json();
     return (data.results ?? []).map(

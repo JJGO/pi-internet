@@ -15,6 +15,7 @@ import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { loadConfig } from "./config.js";
 import { createSearchRouter } from "./search/router.js";
+import { resetSearchProviderState } from "./search/state.js";
 import { formatResults, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS } from "./search/types.js";
 import { setKagiToken, getKagiToken } from "./search/providers/kagi.js";
 import { fetchUrl, resetProxyState } from "./fetch/router.js";
@@ -56,6 +57,7 @@ export default function piInternet(pi: ExtensionAPI) {
   // /toggle-research is intentionally session-only.
   pi.on("session_start", async () => {
     resetProxyState();
+    resetSearchProviderState();
     await resetSocksProxyDispatchers();
     researchEnabled = false;
     const active = pi.getActiveTools();
@@ -67,6 +69,7 @@ export default function piInternet(pi: ExtensionAPI) {
   // Clean up on session shutdown
   pi.on("session_shutdown", async () => {
     resetProxyState();
+    resetSearchProviderState();
     await resetSocksProxyDispatchers();
     clearCloneCache();
     researchEnabled = false;
@@ -119,7 +122,7 @@ export default function piInternet(pi: ExtensionAPI) {
         details: { status: "searching" },
       });
 
-      const { results, provider, errors } = await getSearchRouter().search({
+      const { results, provider, errors, warnings } = await getSearchRouter().search({
         query: params.query,
         numResults,
         freshness: params.freshness,
@@ -136,6 +139,7 @@ export default function piInternet(pi: ExtensionAPI) {
           resultCount: results.length,
           query: params.query,
           errors: errors.length > 0 ? errors : undefined,
+          warnings: warnings.length > 0 ? warnings : undefined,
           items: results,
         },
       };
@@ -159,6 +163,7 @@ export default function piInternet(pi: ExtensionAPI) {
         resultCount?: number;
         provider?: string;
         errors?: string[];
+        warnings?: string[];
         items?: { title: string; url: string }[];
       };
 
@@ -170,11 +175,17 @@ export default function piInternet(pi: ExtensionAPI) {
       let text = theme.fg("success", `${details.resultCount ?? 0} results`);
       text += theme.fg("muted", ` via ${details.provider ?? "unknown"}`);
 
-      if (details.errors?.length) {
-        text += theme.fg("warning", ` (${details.errors.length} provider error(s))`);
+      const badges: string[] = [];
+      if (details.errors?.length) badges.push(`${details.errors.length} provider error(s)`);
+      if (details.warnings?.length) badges.push(`${details.warnings.length} warning${details.warnings.length === 1 ? "" : "s"}`);
+      if (badges.length > 0) {
+        text += theme.fg("warning", ` (${badges.join(", ")})`);
       }
 
       if (!expanded) {
+        if (details.warnings?.length) {
+          text += `\n${theme.fg("muted", details.warnings[0])}`;
+        }
         if (details.items?.length) {
           for (const item of details.items) {
             text += `\n  ${theme.fg("toolOutput", item.title)}`;
@@ -185,7 +196,13 @@ export default function piInternet(pi: ExtensionAPI) {
         return new Text(text, 0, 0);
       }
 
-      // Expanded: show full results
+      if (details.warnings?.length) {
+        text += "\n" + details.warnings.map((warning) => theme.fg("warning", `• ${warning}`)).join("\n");
+      }
+      if (details.errors?.length) {
+        text += "\n" + details.errors.map((error) => theme.fg("muted", `• ${error}`)).join("\n");
+      }
+
       const content = result.content.find((c) => c.type === "text");
       if (content?.type === "text") {
         text += "\n\n" + theme.fg("toolOutput", content.text);
@@ -299,7 +316,10 @@ export default function piInternet(pi: ExtensionAPI) {
       const providers = getSearchRouter().listProviders();
       const lines = providers.map((p) => {
         const status = p.available ? "✓" : "✗";
-        return `  ${status} ${p.name} (${p.role})`;
+        const disabled = p.disabledForSession
+          ? ` — disabled for session${p.disabledReason ? ` (${p.disabledReason})` : ""}`
+          : "";
+        return `  ${status} ${p.name} (${p.role})${disabled}`;
       });
       ctx.ui.notify(`Search providers:\n${lines.join("\n")}`, "info");
     },

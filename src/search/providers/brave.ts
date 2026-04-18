@@ -6,6 +6,7 @@
  */
 
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
 
 export const brave: SearchProvider = {
@@ -33,7 +34,31 @@ export const brave: SearchProvider = {
       signal: options.signal,
     });
 
-    if (!res.ok) throw new Error(`Brave API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      const body = await res.text();
+      const usageLimitExceeded = res.status === 402 && /USAGE_LIMIT_EXCEEDED|Usage limit exceeded/i.test(body);
+      if (res.status === 429 || usageLimitExceeded) {
+        throw new SearchProviderError({
+          provider: "brave",
+          message: usageLimitExceeded
+            ? "Brave API usage limit reached (HTTP 402)"
+            : "Brave API rate limit reached (HTTP 429)",
+          statusCode: res.status,
+          code: "rate_limited",
+          disableForSession: true,
+          disableReason: usageLimitExceeded ? "usage limit exceeded" : "rate limited",
+          userMessage: usageLimitExceeded
+            ? "Brave usage limit reached; disabled for this session."
+            : "Brave rate-limited; disabled for this session.",
+        });
+      }
+      throw new SearchProviderError({
+        provider: "brave",
+        message: `Brave API error (${res.status}): ${body}`,
+        statusCode: res.status,
+        code: "http",
+      });
+    }
 
     const data = await res.json();
     return (data.web?.results ?? []).map(
