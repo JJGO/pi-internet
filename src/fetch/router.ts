@@ -187,7 +187,10 @@ export async function fetchUrl(
     // 4. YouTube
     if (isYouTubeUrl(url) && config.youtube.enabled) {
       if (!youtubeModule) youtubeModule = await import("./youtube.js");
-      result = await youtubeModule.fetchYouTube(url, options.signal);
+      result = await youtubeModule.fetchYouTube(url, {
+        verbose: options.verbose,
+        signal: options.signal,
+      });
       return finalize(result);
     }
 

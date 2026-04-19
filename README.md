@@ -41,13 +41,14 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 | **GitHub** | Clones repo locally, returns tree + README. Use `read`/`bash` on the local path. |
 | **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments (depth 4). |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
-| **YouTube** | Extracts transcript via yt-dlp. Timestamped, grouped into paragraphs. |
+| **YouTube** | Videos return transcripts via yt-dlp. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **PDF** | Extracts text via unpdf. Large extractions are also saved to `~/Downloads/`. |
 | **HTML** | Readability → RSC parser → Jina Reader fallback chain. |
 
 - Links stripped by default (saves ~50 tokens/link). Set `includeLinks: true` to keep.
 - CSS selector support: `selector: ".docs-content"` narrows extraction.
-- `verbose: true` for Reddit: full comment depth. For Twitter: untruncated tweets.
+- `verbose: true` for Reddit: full comment depth. For Twitter: untruncated tweets. For YouTube collections: no internal entry cap.
+- YouTube playlists/channels write full lists to `~/.cache/pi-internet/youtube-lists/`. Default output previews the first 25 items inline.
 
 ### `web_research` (hidden by default)
 
@@ -136,7 +137,7 @@ If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fal
 
 | Binary | Required For |
 |--------|-------------|
-| `yt-dlp` | YouTube transcripts |
+| `yt-dlp` | YouTube transcripts and playlist/channel metadata |
 | `git` or `gh` | GitHub cloning |
 
 ## Commands
@@ -160,7 +161,8 @@ fetch_url(url)
   → Reddit?    Configured Redlib-compatible proxy → parse posts/comments → render markdown
   → Twitter?   Configured Nitter-compatible proxy → parse tweets/profile → render markdown
   → GitHub?    Clone repo → tree + README + file content
-  → YouTube?   yt-dlp subtitles → parse VTT → timestamped transcript
+  → YouTube?   Video → yt-dlp subtitles → parse VTT → timestamped transcript
+               Playlist/channel → yt-dlp flat JSON → first 25 inline + full list file
   → PDF?       unpdf extraction → inline markdown (+ save large outputs)
   → HTTP?      Readability → RSC parser → Jina Reader fallback
 

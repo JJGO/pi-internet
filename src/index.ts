@@ -219,7 +219,7 @@ export default function piInternet(pi: ExtensionAPI) {
     description:
       "Fetch a URL and return clean, readable markdown content. " +
       "Handles GitHub repos (cloned locally), Reddit threads, Twitter/X profiles, " +
-      "YouTube transcripts, PDFs, and regular web pages.",
+      "YouTube videos/playlists/channels, PDFs, and regular web pages.",
     promptSnippet: "Fetch a URL and return clean markdown content",
     promptGuidelines: [
       "Use fetch_url to retrieve the content of a specific URL.",
