@@ -9,10 +9,10 @@
  * See the README provenance section for a brief summary of implementation sources.
  */
 
-import { type ExtensionAPI, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { type ExtensionAPI, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.js";
 import { createSearchRouter } from "./search/router.js";
 import { resetSearchProviderState } from "./search/state.js";

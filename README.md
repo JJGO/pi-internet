@@ -1,6 +1,6 @@
 # pi-internet
 
-Web search, content fetching, and research for [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). Multi-provider search, specialized fetchers for GitHub/Reddit/Twitter/YouTube/PDF, and a scout subagent that keeps noise out of your context.
+Web search, content fetching, and research for [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent). Multi-provider search, specialized fetchers for GitHub/Reddit/Twitter/YouTube/PDF, and a scout subagent that keeps noise out of your context.
 
 ## Install
 
