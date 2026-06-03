@@ -34,6 +34,7 @@ export interface FetchResult {
   title: string;
   content: string;
   error: string | null;
+  images?: Array<{ data: string; mimeType: string }>;
 }
 
 export interface HttpFetchOptions {

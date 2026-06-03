@@ -9,10 +9,10 @@
  * See the README provenance section for a brief summary of implementation sources.
  */
 
-import { type ExtensionAPI, keyHint } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, complete, type UserMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.js";
 import { createSearchRouter } from "./search/router.js";
 import { resetSearchProviderState } from "./search/state.js";
@@ -27,6 +27,22 @@ import { dirname } from "node:path";
 
 const IS_SCOUT = process.env.PI_INTERNET_SCOUT === "1" || process.env.PI_WEB_SURF_SCOUT === "1";
 
+const DESCRIPTION_CLEANUP_PROMPT = `Clean this YouTube video description for an AI coding agent.
+
+Keep:
+- concise summary/context
+- important links only if they identify a referenced resource
+- chapter-like or source-like information if useful
+
+Remove:
+- subscribe/follow/patreon/discord/merch boilerplate
+- sponsor/affiliate/code spam unless central to the video
+- repeated social links
+- generic legal/footer noise
+- long URL dumps
+
+Return plain markdown, max ~2000 characters. If nothing useful remains, return an empty string.`;
+
 export default function piInternet(pi: ExtensionAPI) {
   // Config is loaded on-demand (never cached in closure) so session switches
   // always pick up changes. See REVIEW.md §1.1.
@@ -38,6 +54,41 @@ export default function piInternet(pi: ExtensionAPI) {
       searchProviders: config.searchProviders,
       fallbackProviders: config.fallbackProviders,
     });
+  }
+
+  async function cleanYouTubeDescription(
+    description: string,
+    ctx: ExtensionContext,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (!ctx.model) throw new Error("No active model for YouTube description cleanup");
+
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    if (!auth.ok || !auth.apiKey) {
+      throw new Error(auth.ok ? `No API key for ${ctx.model.provider}` : auth.error);
+    }
+
+    const userMessage: UserMessage = {
+      role: "user",
+      content: [{ type: "text", text: description }],
+      timestamp: Date.now(),
+    };
+
+    const response = await complete(
+      ctx.model,
+      { systemPrompt: DESCRIPTION_CLEANUP_PROMPT, messages: [userMessage] },
+      { apiKey: auth.apiKey, headers: auth.headers, signal },
+    );
+
+    if (response.stopReason === "aborted" || response.stopReason === "error") {
+      throw new Error(response.errorMessage ?? "Description cleanup failed");
+    }
+
+    return response.content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
   }
 
   // Track whether web_research is enabled (hidden by default)
@@ -211,7 +262,7 @@ export default function piInternet(pi: ExtensionAPI) {
     },
   });
 
-  // ── Tool 2: fetch_url (stub for Phase 2) ─────────────────────
+  // ── Tool 2: fetch_url ───────────────────────────────────────
 
   pi.registerTool({
     name: "fetch_url",
@@ -244,7 +295,7 @@ export default function piInternet(pi: ExtensionAPI) {
 
     prepareArguments(args) { return args; },
 
-    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Cancelled" }], details: { url: params.url } };
       }
@@ -254,11 +305,14 @@ export default function piInternet(pi: ExtensionAPI) {
         details: { status: "fetching" },
       });
 
+      const allowImages = ctx.model?.input.includes("image") ?? false;
       const result = await fetchUrl(params.url, getConfig(), {
         selector: params.selector,
         includeLinks: params.includeLinks,
         verbose: params.verbose,
         maxComments: params.maxComments,
+        allowImages,
+        cleanYouTubeDescription: async (description) => cleanYouTubeDescription(description, ctx, signal ?? undefined),
         signal: signal ?? undefined,
       });
 
@@ -272,12 +326,20 @@ export default function piInternet(pi: ExtensionAPI) {
       if (result.error) text += `\n\n> ⚠️ ${result.error}`;
 
       return {
-        content: [{ type: "text", text }],
+        content: [
+          { type: "text" as const, text },
+          ...(result.images ?? []).map((image) => ({
+            type: "image" as const,
+            data: image.data,
+            mimeType: image.mimeType,
+          })),
+        ],
         details: {
           url: result.url,
           title: result.title,
           truncated: result.truncated,
           error: result.error,
+          imageCount: result.images?.length ?? 0,
         },
       };
     },

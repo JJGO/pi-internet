@@ -1,14 +1,17 @@
 /**
  * YouTube fetching via yt-dlp.
  *
- * Single-video URLs return transcripts.
- * Playlist and channel URLs return compact collection summaries.
+ * Single-video URLs return metadata, a cleaned description, chapters, and
+ * timestamped transcripts. Playlist and channel URLs return compact collection
+ * summaries. Vision-capable sessions can request a video frame by adding the
+ * pi-internet-screenshot query parameter to a video URL.
  */
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -24,8 +27,14 @@ const DEFAULT_COLLECTION_LIMIT = 25;
 const YT_DLP_MAX_BUFFER = 5 * 1024 * 1024;
 const YOUTUBE_TABS = new Set(["videos", "shorts", "streams", "playlists"]);
 const YOUTUBE_LIST_CACHE_DIR = join(homedir(), ".cache", "pi-internet", "youtube-lists");
+const SCREENSHOT_PARAM = "pi-internet-screenshot";
+const DESCRIPTION_INPUT_LIMIT = 12_000;
+const DESCRIPTION_OUTPUT_LIMIT = 2_000;
+const SCREENSHOT_FORMAT = "image/jpeg";
+const FRAME_WIDTH = 1280;
 
 let ytDlpAvailable: boolean | null = null;
+let ffmpegAvailable: boolean | null = null;
 
 type YouTubeCollectionKind = "playlist" | "channel";
 type YouTubeTab = "videos" | "shorts" | "streams" | "playlists";
@@ -43,8 +52,9 @@ type YouTubeTarget =
       tab: YouTubeTab | null;
     };
 
-interface RunYtDlpOptions {
+interface RunCommandOptions {
   timeoutMs: number;
+  maxBuffer?: number;
   signal?: AbortSignal;
 }
 
@@ -67,6 +77,24 @@ interface YtDlpCollectionInfo {
   entries?: YtDlpCollectionEntry[];
 }
 
+interface YtDlpChapter {
+  title?: string;
+  start_time?: number;
+  end_time?: number;
+}
+
+interface YtDlpVideoInfo {
+  id?: string;
+  title?: string;
+  channel?: string;
+  uploader?: string;
+  duration?: number | null;
+  upload_date?: string;
+  webpage_url?: string;
+  description?: string;
+  chapters?: YtDlpChapter[];
+}
+
 interface CollectionRenderOptions {
   shownCount: number;
   totalCount: number;
@@ -75,12 +103,27 @@ interface CollectionRenderOptions {
   includeFullListPath: boolean;
 }
 
+interface ScreenshotDirective {
+  cleanUrl: string;
+  timestamp: string;
+}
+
 async function checkYtDlp(): Promise<boolean> {
   if (ytDlpAvailable !== null) return ytDlpAvailable;
   return new Promise((resolve) => {
     execFile("yt-dlp", ["--version"], { timeout: 5000 }, (err) => {
       ytDlpAvailable = !err;
       resolve(ytDlpAvailable);
+    });
+  });
+}
+
+async function checkFfmpeg(): Promise<boolean> {
+  if (ffmpegAvailable !== null) return ffmpegAvailable;
+  return new Promise((resolve) => {
+    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err) => {
+      ffmpegAvailable = !err;
+      resolve(ffmpegAvailable);
     });
   });
 }
@@ -174,15 +217,76 @@ function hasPlaylistId(url: string): boolean {
   }
 }
 
-async function runYtDlp(args: string[], options: RunYtDlpOptions): Promise<{ stdout: string; stderr: string }> {
+function extractScreenshotDirective(url: string): ScreenshotDirective | null {
+  try {
+    const parsed = new URL(url);
+    const timestamp = parsed.searchParams.get(SCREENSHOT_PARAM);
+    if (!timestamp) return null;
+    parsed.searchParams.delete(SCREENSHOT_PARAM);
+    return { cleanUrl: parsed.toString(), timestamp };
+  } catch {
+    return null;
+  }
+}
+
+function parseVideoTimestamp(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  }
+
+  const parts = trimmed.split(":");
+  if (parts.length < 2 || parts.length > 3) return null;
+  if (!parts.every((part) => /^\d+(?:\.\d+)?$/.test(part))) return null;
+
+  const nums = parts.map(Number);
+  if (!nums.every((num) => Number.isFinite(num) && num >= 0)) return null;
+
+  const secondsPart = nums.at(-1)!;
+  const minutesPart = nums.at(-2)!;
+  if (secondsPart >= 60 || minutesPart >= 60) return null;
+
+  if (nums.length === 2) return minutesPart * 60 + secondsPart;
+  return nums[0] * 3600 + minutesPart * 60 + secondsPart;
+}
+
+function formatTimestamp(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const secs = whole % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return hours > 0
+    ? `${two(hours)}:${two(minutes)}:${two(secs)}`
+    : `${two(minutes)}:${two(secs)}`;
+}
+
+function capText(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return trimmed.slice(0, maxChars).replace(/\s+\S*$/, "").trimEnd() + "…";
+}
+
+function normalizeMarkdownBlock(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function runCommand(command: string, args: string[], options: RunCommandOptions): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = execFile(
-      "yt-dlp",
+      command,
       args,
-      { timeout: options.timeoutMs, maxBuffer: YT_DLP_MAX_BUFFER },
+      { timeout: options.timeoutMs, maxBuffer: options.maxBuffer ?? YT_DLP_MAX_BUFFER },
       (err, stdout, stderr) => {
         if (err) {
-          reject(new Error(extractYtDlpError(err, stdout, stderr)));
+          reject(new Error(extractCommandError(err, stdout, stderr)));
           return;
         }
         resolve({ stdout, stderr });
@@ -197,8 +301,8 @@ async function runYtDlp(args: string[], options: RunYtDlpOptions): Promise<{ std
   });
 }
 
-function extractYtDlpError(err: Error, stdout: string, stderr: string): string {
-  const lines = `${stderr}\n${stdout}`
+function extractCommandError(err: Error, stdout: string | Buffer, stderr: string | Buffer): string {
+  const lines = `${stderr.toString()}\n${stdout.toString()}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && line !== "null");
@@ -207,15 +311,24 @@ function extractYtDlpError(err: Error, stdout: string, stderr: string): string {
   return message.replace(/^ERROR:\s*/i, "");
 }
 
-async function getVideoTitle(videoUrl: string, signal?: AbortSignal): Promise<string> {
+function extractYtDlpError(err: Error, stdout: string, stderr: string): string {
+  return extractCommandError(err, stdout, stderr);
+}
+
+async function getVideoInfo(videoUrl: string, signal?: AbortSignal): Promise<YtDlpVideoInfo | null> {
   try {
-    const { stdout } = await runYtDlp(["--get-title", "--no-warnings", videoUrl], {
-      timeoutMs: 15_000,
+    const { stdout } = await runCommand("yt-dlp", [
+      "--dump-single-json",
+      "--skip-download",
+      "--no-warnings",
+      videoUrl,
+    ], {
+      timeoutMs: 30_000,
       signal,
     });
-    return stdout.trim();
+    return JSON.parse(stdout) as YtDlpVideoInfo;
   } catch {
-    return "";
+    return null;
   }
 }
 
@@ -360,6 +473,11 @@ function formatDuration(durationSeconds: number | null | undefined): string | nu
   return parts.join(" ");
 }
 
+function formatUploadDate(value: string | undefined): string | null {
+  if (!value || !/^\d{8}$/.test(value)) return null;
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+}
+
 function humanizeTab(tab: YouTubeTab | null): string | null {
   if (!tab) return null;
   return tab.charAt(0).toUpperCase() + tab.slice(1);
@@ -457,11 +575,58 @@ function renderCollectionContent(
   ].join("\n");
 }
 
+function renderChapters(chapters: YtDlpChapter[] | undefined): string[] {
+  if (!chapters?.length) return [];
+  const lines = ["## Chapters", ""];
+  for (const chapter of chapters) {
+    if (typeof chapter.start_time !== "number" || !Number.isFinite(chapter.start_time)) continue;
+    const title = chapter.title?.trim() || "Untitled";
+    lines.push(`- [${formatTimestamp(chapter.start_time)}] ${title}`);
+  }
+  return lines.length > 2 ? [...lines, ""] : [];
+}
+
+function renderVideoContent(
+  videoId: string,
+  videoUrl: string,
+  info: YtDlpVideoInfo | null,
+  transcript: string,
+  description: string,
+  allowScreenshots: boolean,
+): string {
+  const title = info?.title || videoId;
+  const channel = info?.channel || info?.uploader || null;
+  const duration = formatDuration(info?.duration);
+  const uploadDate = formatUploadDate(info?.upload_date);
+  const displayUrl = info?.webpage_url || videoUrl;
+  const summary = [`**YouTube Video:** ${title}`];
+
+  if (channel) summary.push(`**Channel:** ${channel}`);
+  if (duration) summary.push(`**Duration:** ${duration}`);
+  if (uploadDate) summary.push(`**Uploaded:** ${uploadDate}`);
+  summary.push(`**URL:** ${displayUrl}`);
+
+  if (allowScreenshots) {
+    summary.push(
+      "",
+      `> Visual frame inspection: fetch this video URL with \`&${SCREENSHOT_PARAM}=HH:MM:SS\` to inspect a frame from a transcript timestamp, e.g. \`&${SCREENSHOT_PARAM}=00:02:10\`.`,
+    );
+  }
+
+  const lines = [...summary, ""];
+  if (description) {
+    lines.push("## Description", "", description, "");
+  }
+  lines.push(...renderChapters(info?.chapters));
+  lines.push("## Transcript", "", transcript);
+  return lines.join("\n");
+}
+
 async function getCollectionInfo(
   target: Extract<YouTubeTarget, { kind: "collection" }>,
   signal?: AbortSignal,
 ): Promise<YtDlpCollectionInfo> {
-  const { stdout } = await runYtDlp([
+  const { stdout } = await runCommand("yt-dlp", [
     "--flat-playlist",
     "--dump-single-json",
     "--no-warnings",
@@ -648,21 +813,41 @@ async function fetchCollection(
   };
 }
 
+async function cleanDescription(
+  rawDescription: string | undefined,
+  cleanYouTubeDescription: ((description: string) => Promise<string>) | undefined,
+): Promise<string> {
+  const cappedRaw = capText(rawDescription ?? "", DESCRIPTION_OUTPUT_LIMIT);
+  if (!rawDescription?.trim()) return "";
+  if (!cleanYouTubeDescription) return cappedRaw;
+
+  try {
+    const cleaned = normalizeMarkdownBlock(
+      await cleanYouTubeDescription(capText(rawDescription, DESCRIPTION_INPUT_LIMIT)),
+    );
+    return capText(cleaned, DESCRIPTION_OUTPUT_LIMIT) || cappedRaw;
+  } catch {
+    return cappedRaw;
+  }
+}
+
 async function fetchVideo(
   originalUrl: string,
   videoId: string,
   videoUrl: string,
-  signal?: AbortSignal,
+  options: FetchYouTubeOptions,
 ): Promise<FetchResult> {
-  const [title, subtitleRaw] = await Promise.all([
-    getVideoTitle(videoUrl, signal),
-    extractSubtitles(videoUrl, signal),
+  const [info, subtitleRaw] = await Promise.all([
+    getVideoInfo(videoUrl, options.signal),
+    extractSubtitles(videoUrl, options.signal),
   ]);
+
+  const title = info?.title || videoId;
 
   if (!subtitleRaw) {
     return {
       url: originalUrl,
-      title: title || videoId,
+      title,
       content: "",
       error: "No subtitles available for this video. It may not have captions enabled.",
     };
@@ -672,31 +857,134 @@ async function fetchVideo(
   if (!transcript) {
     return {
       url: originalUrl,
-      title: title || videoId,
+      title,
       content: "",
       error: "Subtitle file was empty or could not be parsed",
     };
   }
 
-  const content = [
-    `**YouTube Video:** ${title || videoId}`,
-    `**URL:** ${videoUrl}`,
-    "",
-    "## Transcript",
-    "",
+  const description = await cleanDescription(info?.description, options.cleanYouTubeDescription);
+  const content = renderVideoContent(
+    videoId,
+    videoUrl,
+    info,
     transcript,
-  ].join("\n");
+    description,
+    options.allowImages ?? false,
+  );
 
-  return { url: originalUrl, title: title || videoId, content, error: null };
+  return { url: originalUrl, title, content, error: null };
+}
+
+async function resolveVideoStreamUrl(videoUrl: string, signal?: AbortSignal): Promise<string> {
+  const { stdout } = await runCommand("yt-dlp", [
+    "-f", "bestvideo[height<=1080]/best[height<=1080]/best",
+    "--get-url",
+    "--no-warnings",
+    videoUrl,
+  ], {
+    timeoutMs: 30_000,
+    signal,
+  });
+
+  const streamUrl = stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => line.startsWith("http"));
+  if (!streamUrl) throw new Error("yt-dlp did not return a playable video stream URL");
+  return streamUrl;
+}
+
+async function captureFrame(videoUrl: string, timestampSeconds: number, signal?: AbortSignal): Promise<{ path: string; data: string; mimeType: string }> {
+  const hasFfmpeg = await checkFfmpeg();
+  if (!hasFfmpeg) {
+    throw new Error("ffmpeg is required for YouTube screenshots. Install with: brew install ffmpeg");
+  }
+
+  const streamUrl = await resolveVideoStreamUrl(videoUrl, signal);
+  const tempDir = mkdtempSync(join(tmpdir(), "pi-yt-frame-"));
+  const outputPath = join(tempDir, `frame-${Math.round(timestampSeconds * 1000)}.jpg`);
+
+  await runCommand("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-ss", String(timestampSeconds),
+    "-i", streamUrl,
+    "-frames:v", "1",
+    "-vf", `scale=min(${FRAME_WIDTH}\\,iw):-2`,
+    "-q:v", "3",
+    outputPath,
+  ], {
+    timeoutMs: 45_000,
+    maxBuffer: 1024 * 1024,
+    signal,
+  });
+
+  if (!existsSync(outputPath)) throw new Error("ffmpeg did not produce a screenshot frame");
+
+  return {
+    path: outputPath,
+    data: readFileSync(outputPath).toString("base64"),
+    mimeType: SCREENSHOT_FORMAT,
+  };
+}
+
+async function fetchVideoScreenshot(
+  originalUrl: string,
+  target: Extract<YouTubeTarget, { kind: "video" }>,
+  timestampText: string,
+  options: FetchYouTubeOptions,
+): Promise<FetchResult> {
+  if (!options.allowImages) {
+    return {
+      url: originalUrl,
+      title: target.videoId,
+      content: "",
+      error: "The current model does not support image input. Switch to a vision-capable model to fetch YouTube screenshots.",
+    };
+  }
+
+  const timestampSeconds = parseVideoTimestamp(timestampText);
+  if (timestampSeconds === null) {
+    return {
+      url: originalUrl,
+      title: target.videoId,
+      content: "",
+      error: `Invalid ${SCREENSHOT_PARAM} timestamp. Use seconds, MM:SS, or HH:MM:SS.`,
+    };
+  }
+
+  try {
+    const frame = await captureFrame(target.videoUrl, timestampSeconds, options.signal);
+    const displayTimestamp = formatTimestamp(timestampSeconds);
+    return {
+      url: originalUrl,
+      title: `YouTube screenshot ${displayTimestamp}`,
+      content: [
+        `YouTube screenshot at ${displayTimestamp} from ${target.videoUrl}.`,
+        `Temporary file: ${frame.path}`,
+      ].join("\n"),
+      error: null,
+      images: [{ data: frame.data, mimeType: frame.mimeType }],
+    };
+  } catch (err) {
+    return {
+      url: originalUrl,
+      title: target.videoId,
+      content: "",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export interface FetchYouTubeOptions {
   verbose?: boolean;
+  allowImages?: boolean;
+  cleanYouTubeDescription?: (description: string) => Promise<string>;
   signal?: AbortSignal;
 }
 
 export async function fetchYouTube(url: string, options: FetchYouTubeOptions = {}): Promise<FetchResult> {
-  const target = classifyYouTubeUrl(url);
+  const screenshotDirective = extractScreenshotDirective(url);
+  const cleanUrl = screenshotDirective?.cleanUrl ?? url;
+  const target = classifyYouTubeUrl(cleanUrl);
   if (!target) {
     return {
       url,
@@ -716,8 +1004,20 @@ export async function fetchYouTube(url: string, options: FetchYouTubeOptions = {
     };
   }
 
+  if (screenshotDirective) {
+    if (target.kind !== "video") {
+      return {
+        url,
+        title: "",
+        content: "",
+        error: `${SCREENSHOT_PARAM} only works with single YouTube video URLs.`,
+      };
+    }
+    return fetchVideoScreenshot(url, target, screenshotDirective.timestamp, options);
+  }
+
   if (target.kind === "video") {
-    return fetchVideo(url, target.videoId, target.videoUrl, options.signal);
+    return fetchVideo(url, target.videoId, target.videoUrl, options);
   }
 
   return fetchCollection(url, target, options.verbose ?? false, options.signal);
@@ -727,6 +1027,11 @@ export const __test__ = {
   classifyYouTubeUrl,
   normalizeYouTubeCollectionUrl,
   getYouTubeTab,
+  extractScreenshotDirective,
+  parseVideoTimestamp,
+  formatTimestamp,
+  capText,
+  renderVideoContent,
   formatDuration,
   renderCollectionContent,
   buildCollectionFilePath,

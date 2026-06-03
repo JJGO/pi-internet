@@ -123,6 +123,8 @@ export interface FetchUrlOptions {
   includeLinks?: boolean;
   verbose?: boolean;
   maxComments?: number;
+  allowImages?: boolean;
+  cleanYouTubeDescription?: (description: string) => Promise<string>;
   signal?: AbortSignal;
 }
 
@@ -132,6 +134,7 @@ export interface FetchUrlResult {
   content: string;
   error: string | null;
   truncated: boolean;
+  images?: Array<{ data: string; mimeType: string }>;
 }
 
 export async function fetchUrl(
@@ -189,6 +192,8 @@ export async function fetchUrl(
       if (!youtubeModule) youtubeModule = await import("./youtube.js");
       result = await youtubeModule.fetchYouTube(url, {
         verbose: options.verbose,
+        allowImages: options.allowImages,
+        cleanYouTubeDescription: options.cleanYouTubeDescription,
         signal: options.signal,
       });
       return finalize(result);
@@ -228,5 +233,6 @@ function finalize(result: FetchResult): FetchUrlResult {
     content: truncated.text,
     error: result.error,
     truncated: truncated.truncated,
+    images: result.images,
   };
 }

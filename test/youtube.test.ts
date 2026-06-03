@@ -129,6 +129,71 @@ test("classifyYouTubeUrl: keeps explicit channel tabs", () => {
   });
 });
 
+test("extractScreenshotDirective: strips screenshot param and keeps video params", () => {
+  const directive = __test__.extractScreenshotDirective(
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ&pi-internet-screenshot=00%3A02%3A10&list=PL123",
+  );
+  assert.equal(directive?.timestamp, "00:02:10");
+  assert.equal(directive?.cleanUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123");
+});
+
+test("extractScreenshotDirective: handles youtu.be query strings", () => {
+  const directive = __test__.extractScreenshotDirective(
+    "https://youtu.be/dQw4w9WgXcQ?pi-internet-screenshot=1%3A23",
+  );
+  assert.equal(directive?.timestamp, "1:23");
+  assert.equal(directive?.cleanUrl, "https://youtu.be/dQw4w9WgXcQ");
+});
+
+test("parseVideoTimestamp: parses seconds and transcript-style timestamps", () => {
+  assert.equal(__test__.parseVideoTimestamp("83"), 83);
+  assert.equal(__test__.parseVideoTimestamp("83.5"), 83.5);
+  assert.equal(__test__.parseVideoTimestamp("1:23"), 83);
+  assert.equal(__test__.parseVideoTimestamp("00:01:23.5"), 83.5);
+});
+
+test("parseVideoTimestamp: rejects invalid timestamps", () => {
+  assert.equal(__test__.parseVideoTimestamp(""), null);
+  assert.equal(__test__.parseVideoTimestamp("-1"), null);
+  assert.equal(__test__.parseVideoTimestamp("1:99"), null);
+  assert.equal(__test__.parseVideoTimestamp("a:b"), null);
+});
+
+test("formatTimestamp: renders transcript-friendly timestamps", () => {
+  assert.equal(__test__.formatTimestamp(83), "01:23");
+  assert.equal(__test__.formatTimestamp(3723), "01:02:03");
+});
+
+test("capText: truncates at a word boundary", () => {
+  assert.equal(__test__.capText("one two three four", 12), "one two…");
+});
+
+test("renderVideoContent: gates screenshot instructions on image capability", () => {
+  const withHint = __test__.renderVideoContent(
+    "abc123",
+    "https://www.youtube.com/watch?v=abc123",
+    { title: "Demo", channel: "Creator", duration: 130, chapters: [{ start_time: 10, title: "Part" }] },
+    "[00:00:01] hello",
+    "Useful description",
+    true,
+  );
+  assert.ok(withHint.includes("pi-internet-screenshot=HH:MM:SS"));
+  assert.ok(withHint.includes("**Channel:** Creator"));
+  assert.ok(withHint.includes("**Duration:** 2m 10s"));
+  assert.ok(withHint.includes("## Description"));
+  assert.ok(withHint.includes("- [00:10] Part"));
+
+  const withoutHint = __test__.renderVideoContent(
+    "abc123",
+    "https://www.youtube.com/watch?v=abc123",
+    { title: "Demo" },
+    "[00:00:01] hello",
+    "",
+    false,
+  );
+  assert.ok(!withoutHint.includes("pi-internet-screenshot"));
+});
+
 test("formatDuration: renders compact human-readable durations", () => {
   assert.equal(__test__.formatDuration(16), "16s");
   assert.equal(__test__.formatDuration(2030), "33m 50s");

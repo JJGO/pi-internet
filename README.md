@@ -41,7 +41,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 | **GitHub** | Clones repo locally, returns tree + README. Use `read`/`bash` on the local path. |
 | **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments (depth 4). |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
-| **YouTube** | Videos return transcripts via yt-dlp. Playlists and channels preview 25 entries inline and write the full list to cache. |
+| **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **PDF** | Extracts text via unpdf. Large extractions are also saved to `~/Downloads/`. |
 | **HTML** | Readability → RSC parser → Jina Reader fallback chain. |
 
@@ -49,6 +49,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 - CSS selector support: `selector: ".docs-content"` narrows extraction.
 - `verbose: true` for Reddit: full comment depth. For Twitter: untruncated tweets. For YouTube collections: no internal entry cap.
 - YouTube playlists/channels write full lists to `~/.cache/pi-internet/youtube-lists/`. Default output previews the first 25 items inline.
+- YouTube video fetches include screenshot instructions only when the active model advertises image input. To inspect a frame, fetch the same video URL with `&pi-internet-screenshot=HH:MM:SS`; frames are temporary JPEG files and are returned as image attachments.
 
 ### `web_research` (hidden by default)
 
@@ -137,7 +138,8 @@ If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fal
 
 | Binary | Required For |
 |--------|-------------|
-| `yt-dlp` | YouTube transcripts and playlist/channel metadata |
+| `yt-dlp` | YouTube transcripts, video metadata, screenshots, and playlist/channel metadata |
+| `ffmpeg` | YouTube screenshots |
 | `git` or `gh` | GitHub cloning |
 
 ## Commands
@@ -161,7 +163,8 @@ fetch_url(url)
   → Reddit?    Configured Redlib-compatible proxy → parse posts/comments → render markdown
   → Twitter?   Configured Nitter-compatible proxy → parse tweets/profile → render markdown
   → GitHub?    Clone repo → tree + README + file content
-  → YouTube?   Video → yt-dlp subtitles → parse VTT → timestamped transcript
+  → YouTube?   Video + pi-internet-screenshot? → yt-dlp stream URL → ffmpeg frame → image attachment
+               Video → yt-dlp metadata + cleaned description + chapters + timestamped transcript
                Playlist/channel → yt-dlp flat JSON → first 25 inline + full list file
   → PDF?       unpdf extraction → inline markdown (+ save large outputs)
   → HTTP?      Readability → RSC parser → Jina Reader fallback
