@@ -63,7 +63,7 @@ function createOriginRepo(tempRoot: string): { originPath: string; workPath: str
   return { originPath, workPath };
 }
 
-function commitPackageVersion(workPath: string, readme: string, message: string): void {
+function commitPackageVersion(workPath: string, readme: string, message: string, branch = "main"): string {
   const packagePath = join(workPath, "packages", "pi-tmux");
   mkdirSync(packagePath, { recursive: true });
   writeFileSync(join(packagePath, "README.md"), readme);
@@ -71,14 +71,15 @@ function commitPackageVersion(workPath: string, readme: string, message: string)
   git(["add", "."], workPath);
   git(["commit", "-m", message], workPath);
   try {
-    git(["push", "-u", "origin", "main"], workPath);
+    git(["push", "-u", "origin", branch], workPath);
   } catch {
-    git(["push", "origin", "main"], workPath);
+    git(["push", "origin", branch], workPath);
   }
+  return git(["rev-parse", "HEAD"], workPath);
 }
 
-function cloneOriginToCache(originPath: string, cachePath: string): void {
-  git(["clone", "--depth", "1", "--single-branch", "--branch", "main", originPath, cachePath]);
+function cloneOriginToCache(originPath: string, cachePath: string, branch = "main"): void {
+  git(["clone", "--depth", "1", "--single-branch", "--branch", branch, originPath, cachePath]);
 }
 
 function writeCacheMetadata(
@@ -306,6 +307,63 @@ test("fetchGitHub: dirty cached clone gets a fresh sibling clone", async () => {
   } finally {
     clearCloneCache();
     globalThis.fetch = originalFetch;
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fetchGitHub: branch names with slashes resolve before reading paths", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-"));
+
+  try {
+    const { originPath, workPath } = createOriginRepo(tempRoot);
+    const branch = "feature/demo";
+    const repoPath = join(tempRoot, "user", `repo@${encodeURIComponent(branch)}`);
+
+    commitPackageVersion(workPath, "# Main README\n", "main");
+    git(["checkout", "-b", branch], workPath);
+    commitPackageVersion(workPath, "# Slash Branch README\n", "branch", branch);
+    cloneOriginToCache(originPath, repoPath, branch);
+
+    clearCloneCache();
+    const result = await fetchGitHub(
+      "https://github.com/user/repo/tree/feature/demo/packages/pi-tmux#readme",
+      makeConfig(tempRoot),
+    );
+
+    assert.ok(result);
+    assert.equal(result?.error, null);
+    assert.ok(result?.content.includes("# Slash Branch README"));
+    assert.ok(result?.content.includes(`Repository cloned to: ${repoPath}`));
+  } finally {
+    clearCloneCache();
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fetchGitHub: cached commit URLs verify HEAD before returning content", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-"));
+
+  try {
+    const { originPath, workPath } = createOriginRepo(tempRoot);
+    const oldCommit = commitPackageVersion(workPath, "# Old Commit README\n", "old");
+    commitPackageVersion(workPath, "# New Main README\n", "new");
+
+    const repoPath = join(tempRoot, "user", `repo@${oldCommit}`);
+    cloneOriginToCache(originPath, repoPath, "main");
+    assert.ok(readFileSync(join(repoPath, "packages", "pi-tmux", "README.md"), "utf-8").includes("# New Main README"));
+
+    clearCloneCache();
+    const result = await fetchGitHub(
+      `https://github.com/user/repo/blob/${oldCommit}/packages/pi-tmux/README.md`,
+      makeConfig(tempRoot),
+    );
+
+    assert.ok(result);
+    assert.equal(result?.error, null);
+    assert.ok(result?.content.includes("# Old Commit README"));
+    assert.ok(readFileSync(join(repoPath, "packages", "pi-tmux", "README.md"), "utf-8").includes("# Old Commit README"));
+  } finally {
+    clearCloneCache();
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });

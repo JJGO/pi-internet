@@ -38,6 +38,7 @@ interface GitHubUrlInfo {
   path?: string;
   type: "root" | "blob" | "tree";
   showReadme?: boolean;
+  refAndPathParts?: string[];
 }
 
 function shouldShowReadmePreview(parsed: URL, type: GitHubUrlInfo["type"]): boolean {
@@ -93,6 +94,7 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
     ref,
     path: pathParts.length > 0 ? pathParts.join("/") : "",
     type,
+    refAndPathParts: segments.slice(3),
     ...(shouldShowReadmePreview(parsed, type) ? { showReadme: true } : {}),
   };
 }
@@ -126,7 +128,7 @@ function cacheKey(owner: string, repo: string, ref?: string): string {
 }
 
 function cloneDir(config: PiInternetConfig, owner: string, repo: string, ref?: string): string {
-  const dirName = ref ? `${repo}@${ref}` : repo;
+  const dirName = ref ? `${repo}@${encodeURIComponent(ref)}` : repo;
   return join(config.github.clonePath, owner, dirName);
 }
 
@@ -240,25 +242,57 @@ async function cloneRepo(
 
   try { rmSync(localPath, { recursive: true, force: true }); } catch {}
 
-  const env = applySocksProxyEnv(process.env, { socksProxy: config.fetch.socksProxy });
+  const env = applySocksProxyEnv({ ...process.env, GIT_TERMINAL_PROMPT: "0" }, { socksProxy: config.fetch.socksProxy });
+  const sourceUrl = remoteUrl ?? `https://github.com/${owner}/${repo}.git`;
+
+  if (ref) {
+    mkdirSync(localPath, { recursive: true, mode: 0o700 });
+
+    const initResult = await execCommand("git", ["init", localPath], undefined, GIT_TIMEOUT_MS, signal, env);
+    if (!initResult.ok) {
+      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+      return { path: null, error: initResult.stderr.trim() || initResult.error || "git init failed" };
+    }
+
+    const remoteResult = await execCommand("git", ["remote", "add", "origin", sourceUrl], localPath, GIT_TIMEOUT_MS, signal, env);
+    if (!remoteResult.ok) {
+      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+      return { path: null, error: remoteResult.stderr.trim() || remoteResult.error || "git remote add failed" };
+    }
+
+    const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", ref], localPath, GIT_TIMEOUT_MS, signal, env);
+    if (!fetchResult.ok) {
+      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+      return { path: null, error: fetchResult.stderr.trim() || fetchResult.error || `git fetch ${ref} failed` };
+    }
+
+    const checkoutResult = await execCommand("git", ["checkout", "--force", "FETCH_HEAD"], localPath, GIT_TIMEOUT_MS, signal, env);
+    if (!checkoutResult.ok) {
+      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+      return { path: null, error: checkoutResult.stderr.trim() || checkoutResult.error || "git checkout FETCH_HEAD failed" };
+    }
+
+    return { path: localPath };
+  }
 
   if (!remoteUrl) {
     const hasGh = await checkGhAvailable();
     if (hasGh) {
-      const args = ["repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"];
-      if (ref) args.push("--branch", ref);
-      const result = await execCommand("gh", args, undefined, GIT_TIMEOUT_MS, signal, env);
+      const result = await execCommand(
+        "gh",
+        ["repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"],
+        undefined,
+        GIT_TIMEOUT_MS,
+        signal,
+        env,
+      );
       if (result.ok) return { path: localPath };
       try { rmSync(localPath, { recursive: true, force: true }); } catch {}
       return { path: null, error: result.stderr.trim() || result.error || "gh clone failed" };
     }
   }
 
-  const sourceUrl = remoteUrl ?? `https://github.com/${owner}/${repo}.git`;
-  const args = ["clone", "--depth", "1", "--single-branch"];
-  if (ref) args.push("--branch", ref);
-  args.push(sourceUrl, localPath);
-  const result = await execCommand("git", args, undefined, GIT_TIMEOUT_MS, signal, env);
+  const result = await execCommand("git", ["clone", "--depth", "1", "--single-branch", sourceUrl, localPath], undefined, GIT_TIMEOUT_MS, signal, env);
   if (result.ok) return { path: localPath };
   try { rmSync(localPath, { recursive: true, force: true }); } catch {}
   return { path: null, error: result.stderr.trim() || result.error || "git clone failed" };
@@ -278,6 +312,13 @@ async function resolveCurrentRef(localPath: string, signal?: AbortSignal): Promi
   return branch.length > 0 ? branch : undefined;
 }
 
+async function resolveHeadCommit(localPath: string, signal?: AbortSignal): Promise<string | undefined> {
+  const result = await execCommand("git", ["rev-parse", "HEAD"], localPath, GIT_TIMEOUT_MS, signal);
+  if (!result.ok) return undefined;
+  const commit = result.stdout.trim();
+  return commit.length > 0 ? commit : undefined;
+}
+
 async function isWorkingTreeDirty(localPath: string, signal?: AbortSignal): Promise<boolean | null> {
   const result = await execCommand("git", ["status", "--porcelain"], localPath, GIT_TIMEOUT_MS, signal);
   if (!result.ok) return null;
@@ -294,7 +335,7 @@ async function refreshClone(
 
   // We reset to the remote target instead of using git pull so the cache stays
   // deterministic and never accumulates merge commits from background refreshes.
-  const env = applySocksProxyEnv(process.env, { socksProxy });
+  const env = applySocksProxyEnv({ ...process.env, GIT_TERMINAL_PROMPT: "0" }, { socksProxy });
   const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", targetRef], localPath, GIT_TIMEOUT_MS, signal, env);
   if (!fetchResult.ok) {
     return { path: null, error: fetchResult.stderr.trim() || fetchResult.error || `git fetch ${targetRef} failed` };
@@ -324,6 +365,93 @@ async function checkRepoSize(owner: string, repo: string, socksProxy: string | n
   }
 }
 
+interface RefPathCandidate {
+  ref: string;
+  path: string;
+}
+
+function buildRefPathCandidates(parts: string[]): RefPathCandidate[] {
+  const candidates: RefPathCandidate[] = [];
+  for (let i = parts.length; i >= 1; i--) {
+    candidates.push({
+      ref: parts.slice(0, i).join("/"),
+      path: parts.slice(i).join("/"),
+    });
+  }
+  return candidates;
+}
+
+function resolveCachedRefPath(
+  candidates: RefPathCandidate[],
+  owner: string,
+  repo: string,
+  config: PiInternetConfig,
+): RefPathCandidate | null {
+  for (const candidate of candidates) {
+    const metadata = readCloneMetadata(cloneMetadataPath(config, owner, repo, candidate.ref));
+    const activePath = resolveActiveClonePath(cloneDir(config, owner, repo, candidate.ref), metadata);
+    if (existsSync(join(activePath, ".git"))) return candidate;
+  }
+  return null;
+}
+
+async function listRemoteRefs(
+  owner: string,
+  repo: string,
+  socksProxy: string | null,
+  signal?: AbortSignal,
+): Promise<Set<string> | null> {
+  const env = applySocksProxyEnv({ ...process.env, GIT_TERMINAL_PROMPT: "0" }, { socksProxy });
+  const result = await execCommand(
+    "git",
+    ["ls-remote", "--heads", "--tags", "--refs", `https://github.com/${owner}/${repo}.git`],
+    undefined,
+    GIT_TIMEOUT_MS,
+    signal,
+    env,
+  );
+  if (!result.ok) return null;
+
+  const refs = new Set<string>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const [, refName] = line.trim().split(/\s+/, 2);
+    if (!refName) continue;
+    if (refName.startsWith("refs/heads/")) refs.add(refName.slice("refs/heads/".length));
+    if (refName.startsWith("refs/tags/")) refs.add(refName.slice("refs/tags/".length));
+  }
+  return refs;
+}
+
+async function resolveRefAndPath(
+  info: GitHubUrlInfo,
+  config: PiInternetConfig,
+  signal?: AbortSignal,
+): Promise<GitHubUrlInfo> {
+  if ((info.type !== "blob" && info.type !== "tree") || !info.refAndPathParts?.length) return info;
+  if (info.refAndPathParts.length === 1) return info;
+
+  const candidates = buildRefPathCandidates(info.refAndPathParts);
+  const cached = resolveCachedRefPath(candidates, info.owner, info.repo, config);
+  if (cached) return { ...info, ref: cached.ref, path: cached.path };
+
+  const firstPart = info.refAndPathParts[0];
+  if (isCommitRef(firstPart)) {
+    return {
+      ...info,
+      ref: firstPart,
+      path: info.refAndPathParts.slice(1).join("/"),
+    };
+  }
+
+  const remoteRefs = await listRemoteRefs(info.owner, info.repo, config.fetch.socksProxy, signal);
+  if (remoteRefs) {
+    const remoteMatch = candidates.find((candidate) => remoteRefs.has(candidate.ref));
+    if (remoteMatch) return { ...info, ref: remoteMatch.ref, path: remoteMatch.path };
+  }
+
+  return info;
+}
+
 async function ensureRepoReady(
   owner: string,
   repo: string,
@@ -342,7 +470,12 @@ async function ensureRepoReady(
     const activePath = resolveActiveClonePath(canonicalPath, metadata);
 
     if (existsSync(join(activePath, ".git"))) {
-      if (!shouldRefreshClone(metadata, ref, config.github.refreshTtlMs)) {
+      let needsRefresh = shouldRefreshClone(metadata, ref, config.github.refreshTtlMs);
+      if (!needsRefresh && isCommitRef(ref)) {
+        const head = await resolveHeadCommit(activePath, signal);
+        needsRefresh = !head || !head.startsWith(ref);
+      }
+      if (!needsRefresh) {
         return { path: activePath };
       }
 
@@ -570,9 +703,10 @@ export async function fetchGitHub(
   config: PiInternetConfig,
   signal?: AbortSignal,
 ): Promise<FetchResult | null> {
-  const info = parseGitHubUrl(url);
-  if (!info) return null; // Not a code URL → fall through to HTTP
+  const parsedInfo = parseGitHubUrl(url);
+  if (!parsedInfo) return null; // Not a code URL → fall through to HTTP
 
+  const info = await resolveRefAndPath(parsedInfo, config, signal);
   const { owner, repo } = info;
   const result = await ensureRepoReady(owner, repo, info.ref, config, signal);
   if (!result.path) {
