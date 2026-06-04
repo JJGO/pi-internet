@@ -269,13 +269,13 @@ export default function piInternet(pi: ExtensionAPI) {
     label: "Fetch URL",
     description:
       "Fetch a URL and return clean, readable markdown content. " +
-      "Handles GitHub repos (cloned locally), Reddit threads, Twitter/X profiles, " +
+      "Handles GitHub repos/files/PRs/issues/releases/Actions/gists, Reddit threads, Twitter/X profiles, " +
       "YouTube videos/playlists/channels, PDFs, and regular web pages.",
     promptSnippet: "Fetch a URL and return clean markdown content",
     promptGuidelines: [
       "Use fetch_url to retrieve the content of a specific URL.",
       "For Reddit and Twitter/X URLs, this tool returns structured, token-efficient content via privacy proxies.",
-      "For GitHub URLs, the repo is cloned locally — you can then use read and bash on the local path.",
+      "For GitHub repo/file/tree URLs, the repo is cloned locally — use read and bash on the local path. GitHub PRs/issues/releases/Actions/gists are fetched through GitHub-native APIs instead of HTML scraping.",
     ],
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),

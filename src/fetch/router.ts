@@ -6,7 +6,7 @@
  * Routing order:
  * 1. Reddit → Redlib proxy parser
  * 2. Twitter/X → Nitter proxy parser
- * 3. GitHub → clone locally
+ * 3. GitHub → clone code locally or fetch collaboration surfaces via API
  * 4. YouTube → yt-dlp transcript
  * 5. PDF → text extraction
  * 6. HTTP → Readability → RSC → Jina fallback chain
@@ -52,7 +52,7 @@ function isTwitterUrl(url: string): boolean {
 
 function isGitHubUrl(url: string): boolean {
   const host = getHost(url);
-  return host === "github.com" || host === "www.github.com";
+  return host === "github.com" || host === "www.github.com" || host === "gist.github.com";
 }
 
 function isYouTubeUrl(url: string): boolean {
@@ -182,9 +182,12 @@ export async function fetchUrl(
     // 3. GitHub
     if (isGitHubUrl(url) && config.github.enabled) {
       if (!githubModule) githubModule = await import("./github.js");
-      const ghResult = await githubModule.fetchGitHub(url, config, options.signal);
+      const ghResult = await githubModule.fetchGitHub(url, config, options.signal, {
+        verbose: options.verbose,
+        includeLinks: options.includeLinks,
+      });
       if (ghResult) return finalize(ghResult);
-      // null means "not a code URL" — fall through to HTTP
+      // null means "not a supported GitHub URL" — fall through to HTTP
     }
 
     // 4. YouTube

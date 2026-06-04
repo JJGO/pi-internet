@@ -7,6 +7,7 @@ import test from "node:test";
 import type { PiInternetConfig } from "../src/config.ts";
 import { fetchGitHub, clearCloneCache, parseGitHubUrl } from "../src/fetch/github.ts";
 import { fetchUrl } from "../src/fetch/router.ts";
+import { fetchGitHubResource, parseGitHubResourceUrl, __test__ as githubApiTest } from "../src/fetch/github-api.ts";
 
 function makeConfig(clonePath: string): PiInternetConfig {
   return {
@@ -404,5 +405,160 @@ test("fetchUrl: bare repo keeps README in truncated output", async () => {
     clearCloneCache();
     globalThis.fetch = originalFetch;
     rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("parseGitHubResourceUrl: collaboration URL classes", () => {
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/HomebrewML/HeavyBall/pull/88"), {
+    kind: "pull",
+    owner: "HomebrewML",
+    repo: "HeavyBall",
+    number: 88,
+    url: "https://github.com/HomebrewML/HeavyBall/pull/88",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/issues/123"), {
+    kind: "issue",
+    owner: "user",
+    repo: "repo",
+    number: 123,
+    url: "https://github.com/user/repo/issues/123",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/releases/tag/v1.2.3"), {
+    kind: "release",
+    owner: "user",
+    repo: "repo",
+    tag: "v1.2.3",
+    url: "https://github.com/user/repo/releases/tag/v1.2.3",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/actions/runs/456"), {
+    kind: "actions-run",
+    owner: "user",
+    repo: "repo",
+    runId: "456",
+    url: "https://github.com/user/repo/actions/runs/456",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://gist.github.com/octo/abcdef"), {
+    kind: "gist",
+    owner: "octo",
+    gistId: "abcdef",
+    url: "https://gist.github.com/octo/abcdef",
+  });
+  assert.equal(parseGitHubResourceUrl("https://github.com/user/repo/blob/main/README.md"), null);
+});
+
+test("fetchUrl: GitHub PR uses native GitHub route instead of generic HTML", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-"));
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => {
+      throw new Error("generic fetch should not be called for GitHub PRs");
+    };
+
+    githubApiTest.setCommandRunner(async (_command: string, args: string[]) => {
+      if (args[0] === "--version") {
+        return { ok: true, stdout: "gh version test", stderr: "", code: 0, timedOut: false };
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            number: 88,
+            title: "Fix ECC correction range: ±0.5 ULP → ±1 ULP",
+            state: "MERGED",
+            author: { login: "josejg" },
+            body: "PR body from gh JSON",
+            comments: [{ author: { login: "ClashLuke" }, createdAt: "2026-03-16T20:22:14Z", body: "Thanks for the detailed analysis.", url: "https://github.com/HomebrewML/HeavyBall/pull/88#issuecomment-1" }],
+            reviews: [{ author: { login: "chatgpt-codex-connector" }, submittedAt: "2026-03-16T18:12:03Z", state: "COMMENTED", body: "Codex Review" }],
+            commits: [{ oid: "f5b526a14132", messageHeadline: "fix ECC correction range" }],
+            files: [{ path: "heavyball/utils.py", additions: 8, deletions: 2, changeType: "MODIFIED" }],
+            additions: 12,
+            deletions: 4,
+            changedFiles: 2,
+            url: "https://github.com/HomebrewML/HeavyBall/pull/88",
+            createdAt: "2026-03-16T18:07:40Z",
+            updatedAt: "2026-04-26T21:37:14Z",
+            mergedAt: "2026-04-26T21:37:14Z",
+            baseRefName: "main",
+            headRefName: "ecc-range",
+          }),
+          stderr: "",
+          code: 0,
+          timedOut: false,
+        };
+      }
+      if (args[0] === "api" && String(args[1]).includes("/pulls/88/comments")) {
+        return {
+          ok: true,
+          stdout: JSON.stringify([{ user: { login: "reviewer" }, created_at: "2026-03-16T18:12:03Z", path: "heavyball/utils.py", line: 42, body: "Inline review comment", html_url: "https://github.com/HomebrewML/HeavyBall/pull/88#discussion" }]),
+          stderr: "",
+          code: 0,
+          timedOut: false,
+        };
+      }
+      return { ok: false, stdout: "", stderr: `unexpected args: ${args.join(" ")}`, code: 1, timedOut: false, error: "unexpected gh call" };
+    });
+
+    const result = await fetchUrl("https://github.com/HomebrewML/HeavyBall/pull/88", makeConfig(tempRoot));
+
+    assert.equal(result.error, null);
+    assert.equal(result.truncated, false);
+    assert.ok(result.content.includes("PR #88"));
+    assert.ok(result.content.includes("PR body from gh JSON"));
+    assert.ok(result.content.includes("Thanks for the detailed analysis."));
+    assert.ok(result.content.includes("Inline review comment"));
+    assert.ok(result.content.includes("heavyball/utils.py (+8/-2)"));
+    assert.ok(!result.content.includes("\u001f�"));
+  } finally {
+    githubApiTest.resetCommandRunner();
+    clearCloneCache();
+    globalThis.fetch = originalFetch;
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fetchGitHubResource: Actions verbose saves logs to a temp path", async () => {
+  try {
+    githubApiTest.setCommandRunner(async (_command: string, args: string[]) => {
+      if (args[0] === "--version") {
+        return { ok: true, stdout: "gh version test", stderr: "", code: 0, timedOut: false };
+      }
+      if (args[0] === "run" && args[1] === "view" && args.includes("--json")) {
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            displayTitle: "CI",
+            status: "completed",
+            conclusion: "failure",
+            workflowName: "test",
+            event: "pull_request",
+            headBranch: "feature",
+            headSha: "abcdef1234567890",
+            url: "https://github.com/user/repo/actions/runs/456",
+            jobs: [{ name: "unit", status: "completed", conclusion: "failure" }],
+          }),
+          stderr: "",
+          code: 0,
+          timedOut: false,
+        };
+      }
+      if (args[0] === "run" && args[1] === "view" && args.includes("--log-failed")) {
+        return { ok: true, stdout: "unit\tRun tests\tfailing log line\n", stderr: "", code: 0, timedOut: false };
+      }
+      return { ok: false, stdout: "", stderr: `unexpected args: ${args.join(" ")}`, code: 1, timedOut: false, error: "unexpected gh call" };
+    });
+
+    const route = parseGitHubResourceUrl("https://github.com/user/repo/actions/runs/456");
+    assert.ok(route && route.kind === "actions-run");
+    const result = await fetchGitHubResource(route, makeConfig(tmpdir()), { verbose: true });
+
+    assert.equal(result.error, null);
+    const logPath = result.content.match(/Logs were saved to: (.+)$/m)?.[1];
+    assert.ok(logPath, "expected log path in output");
+    assert.ok(readFileSync(logPath, "utf-8").includes("failing log line"));
+    rmSync(logPath.replace(/\/actions-run-456-logs\.txt$/, ""), { recursive: true, force: true });
+  } finally {
+    githubApiTest.resetCommandRunner();
+    clearCloneCache();
   }
 });

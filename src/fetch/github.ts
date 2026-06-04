@@ -1,5 +1,5 @@
 /**
- * GitHub URL handling — clone repos locally for real file access.
+ * GitHub URL handling — clone code URLs locally and route collaboration URLs through GitHub APIs.
  *
  * Provenance: pi-web-access/github-extract.ts
  * Borrowed: Clone cache, gh/git clone with depth=1, NOISE_DIRS filtering,
@@ -15,10 +15,11 @@ import {
   openSync, readSync, closeSync, mkdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
-import { extname, join, resolve as resolvePath } from "node:path";
+import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import { applySocksProxyEnv, fetchWithProxy } from "../util/proxy.js";
 import type { FetchResult } from "./http.js";
+import { fetchGitHubResource, parseGitHubResourceUrl, resetGitHubApiState } from "./github-api.js";
 
 // ── URL parsing ────────────────────────────────────────────────
 
@@ -638,6 +639,13 @@ function readReadme(localPath: string): ReadmeResult | null {
   return null;
 }
 
+function resolveInsideClone(localPath: string, relPath: string): string | null {
+  const root = resolvePath(localPath);
+  const fullPath = resolvePath(root, relPath || ".");
+  if (fullPath === root || fullPath.startsWith(root + pathSep)) return fullPath;
+  return null;
+}
+
 function generateContent(localPath: string, info: GitHubUrlInfo): string {
   const lines: string[] = [`Repository cloned to: ${localPath}`, ""];
 
@@ -651,8 +659,10 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 
   if (info.type === "tree") {
     const dirPath = info.path || "";
-    const fullPath = resolvePath(localPath, dirPath);
-    if (!existsSync(fullPath)) {
+    const fullPath = resolveInsideClone(localPath, dirPath);
+    if (!fullPath) {
+      lines.push(`Path \`${dirPath}\` is outside the repository checkout.`, "", "## Structure", buildTree(localPath));
+    } else if (!existsSync(fullPath)) {
       lines.push(`Path \`${dirPath}\` not found. Showing root instead.`, "", "## Structure", buildTree(localPath));
     } else {
       lines.push(`## ${dirPath || "/"}`);
@@ -677,8 +687,10 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
 
   if (info.type === "blob") {
     const filePath = info.path || "";
-    const fullPath = resolvePath(localPath, filePath);
-    if (!existsSync(fullPath)) {
+    const fullPath = resolveInsideClone(localPath, filePath);
+    if (!fullPath) {
+      lines.push(`Path \`${filePath}\` is outside the repository checkout.`, "", "## Structure", buildTree(localPath));
+    } else if (!existsSync(fullPath)) {
       lines.push(`Path \`${filePath}\` not found. Showing root instead.`, "", "## Structure", buildTree(localPath));
     } else if (isBinaryFile(fullPath)) {
       lines.push(`## ${filePath}`, `Binary file (${formatFileSize(statSync(fullPath).size)}). Use \`read\` at the path above.`);
@@ -702,9 +714,20 @@ export async function fetchGitHub(
   url: string,
   config: PiInternetConfig,
   signal?: AbortSignal,
+  options: { verbose?: boolean; includeLinks?: boolean } = {},
 ): Promise<FetchResult | null> {
   const parsedInfo = parseGitHubUrl(url);
-  if (!parsedInfo) return null; // Not a code URL → fall through to HTTP
+  if (!parsedInfo) {
+    const resourceRoute = parseGitHubResourceUrl(url);
+    if (resourceRoute) {
+      return fetchGitHubResource(resourceRoute, config, {
+        verbose: options.verbose,
+        includeLinks: options.includeLinks,
+        signal,
+      });
+    }
+    return null; // Not a GitHub URL → fall through to HTTP
+  }
 
   const info = await resolveRefAndPath(parsedInfo, config, signal);
   const { owner, repo } = info;
@@ -730,4 +753,5 @@ export async function fetchGitHub(
 /** Clear the in-memory clone cache. Called on session_shutdown. */
 export function clearCloneCache(): void {
   cloneCache.clear();
+  resetGitHubApiState();
 }

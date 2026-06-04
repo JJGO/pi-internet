@@ -38,7 +38,8 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 
 | URL Type | Handler |
 |----------|---------|
-| **GitHub** | Clones repo locally, returns tree + README. Use `read`/`bash` on the local path. |
+| **GitHub repos/files/trees** | Clones repo locally, returns tree + README or file content. Use `read`/`bash` on the local path. |
+| **GitHub PRs/issues/releases/Actions/gists/commits** | Uses `gh`/GitHub REST API and returns structured Markdown instead of brittle GitHub HTML extraction. Actions logs use progressive disclosure: `verbose: true` saves logs to a temp file and reports the path. |
 | **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments (depth 4). |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
@@ -140,7 +141,8 @@ If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fal
 |--------|-------------|
 | `yt-dlp` | YouTube transcripts, video metadata, screenshots, and playlist/channel metadata |
 | `ffmpeg` | YouTube screenshots |
-| `git` or `gh` | GitHub cloning |
+| `git` or `gh` | GitHub repo cloning |
+| `gh` | Recommended for GitHub PRs/issues/releases/Actions/gists, private repos, authenticated rate limits, and Actions log export |
 
 ## Commands
 
@@ -162,7 +164,8 @@ web_search(query)
 fetch_url(url)
   → Reddit?    Configured Redlib-compatible proxy → parse posts/comments → render markdown
   → Twitter?   Configured Nitter-compatible proxy → parse tweets/profile → render markdown
-  → GitHub?    Clone repo → tree + README + file content
+  → GitHub repo/file/tree?  Clone repo → tree + README + file content
+  → GitHub PR/issue/release/Actions/gist/commit?  gh/API → structured Markdown
   → YouTube?   Video + pi-internet-screenshot? → yt-dlp stream URL → ffmpeg frame → image attachment
                Video → yt-dlp metadata + cleaned description + chapters + timestamped transcript
                Playlist/channel → yt-dlp flat JSON → first 25 inline + full list file
