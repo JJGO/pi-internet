@@ -6,7 +6,8 @@
  * profile/thread parsing, token-efficient rendering.
  */
 
-import { parse, getText, getAttr, normalizeText } from "../util/dom.js";
+import { parse, getText, getAttr, normalizeText, type Doc } from "../util/dom.js";
+import { htmlToMarkdown } from "../util/markdown.js";
 import { combinedSignal } from "../util/signal.js";
 import { fetchWithProxy } from "../util/proxy.js";
 import type { PiInternetConfig } from "../config.js";
@@ -32,6 +33,14 @@ interface Tweet {
   cardUrl?: string;
 }
 
+interface Article {
+  author: string;
+  username: string;
+  time: string;
+  title: string;
+  content: string;
+}
+
 // ── URL rewriting ──────────────────────────────────────────────
 
 function rewriteToProxy(url: string, proxyHost: string): string {
@@ -46,7 +55,41 @@ function isThreadUrl(url: string): boolean {
   return parts.length >= 3 && parts[1] === "status";
 }
 
+function isArticleUrl(url: string): boolean {
+  const parts = new URL(url).pathname.split("/").filter(Boolean);
+  return (
+    parts.length >= 3 && parts[0] === "i" && parts[1] === "article"
+  ) || (
+    parts.length >= 3 && parts[1] === "article"
+  );
+}
+
 // ── Parsing ────────────────────────────────────────────────────
+
+function parseArticlePage(doc: Doc, includeLinks: boolean): Article {
+  const titleEl = doc.querySelector(".article-title");
+  const title = getText(titleEl) || cleanNitterTitle(getText(doc.querySelector("title")));
+
+  const authorEl = doc.querySelector(".article-author .fullname");
+  const author = getAttr(authorEl, "title") || getText(authorEl);
+
+  const usernameEl = doc.querySelector(".article-author .username");
+  const username = getAttr(usernameEl, "title") || getText(usernameEl);
+
+  const dateEl = doc.querySelector(".article-author .tweet-date a");
+  const time = getAttr(dateEl, "title") || getText(dateEl);
+
+  const contentEl = doc.querySelector(".article-content") as Element | null;
+  const content = contentEl
+    ? htmlToMarkdown(contentEl.innerHTML, { includeLinks })
+    : "";
+
+  return { author, username, time, title, content };
+}
+
+function cleanNitterTitle(title: string): string {
+  return title.replace(/\s*\|\s*Nitter\s*$/i, "").trim();
+}
 
 function extractTweet(item: Element, baseUrl: string): Tweet {
   const isRetweet = !!item.querySelector(".retweet-header");
@@ -108,6 +151,14 @@ function extractTweet(item: Element, baseUrl: string): Tweet {
 
 const TWEET_MAX_LEN = 500;
 
+function renderArticle(article: Article): string {
+  const lines: string[] = [`# ${article.title}`];
+  const byline = [article.username || article.author, article.time].filter(Boolean).join(" — ");
+  if (byline) lines.push("", `**${byline}**`);
+  if (article.content) lines.push("", article.content);
+  return lines.join("\n");
+}
+
 function renderTweet(t: Tweet, verbose: boolean): string {
   const parts: string[] = [];
 
@@ -166,6 +217,20 @@ export async function fetchTwitter(
 
   const html = await res.text();
   const doc = parse(html);
+
+  if (isArticleUrl(url)) {
+    const article = parseArticlePage(doc, options.includeLinks ?? config.fetch.includeLinks);
+    if (!article.title && !article.content) {
+      throw new Error("Could not find article content in Nitter page");
+    }
+
+    return {
+      url,
+      title: article.title,
+      content: renderArticle(article),
+      error: null,
+    };
+  }
 
   if (isThreadUrl(url)) {
     // Thread view
@@ -237,3 +302,10 @@ export async function fetchTwitter(
 
   return { url, title: `${name} (${username})`, content: lines.join("\n"), error: null };
 }
+
+export const __test__ = {
+  isArticleUrl,
+  parseArticlePage,
+  renderArticle,
+  rewriteToProxy,
+};
