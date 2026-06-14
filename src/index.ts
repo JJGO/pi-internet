@@ -286,10 +286,7 @@ export default function piInternet(pi: ExtensionAPI) {
         Type.Boolean({ description: "Keep hyperlinks in output (default: false, saves tokens)" }),
       ),
       verbose: Type.Optional(
-        Type.Boolean({ description: "Full content: deeper Reddit comments, untruncated tweets" }),
-      ),
-      maxComments: Type.Optional(
-        Type.Integer({ description: "Limit top-level comments for Reddit threads", minimum: 1 }),
+        Type.Boolean({ description: "Full content: all parsed Reddit comments/deeper replies, untruncated tweets" }),
       ),
     }),
 
@@ -310,7 +307,6 @@ export default function piInternet(pi: ExtensionAPI) {
         selector: params.selector,
         includeLinks: params.includeLinks,
         verbose: params.verbose,
-        maxComments: params.maxComments,
         allowImages,
         cleanYouTubeDescription: async (description) => cleanYouTubeDescription(description, ctx, signal ?? undefined),
         signal: signal ?? undefined,

@@ -25,7 +25,13 @@ let twitterModule: typeof import("./twitter.js") | null = null;
 // ── URL classifiers ────────────────────────────────────────────
 
 const REDDIT_HOSTS = new Set([
-  "reddit.com", "www.reddit.com", "old.reddit.com", "np.reddit.com",
+  "reddit.com",
+  "www.reddit.com",
+  "old.reddit.com",
+  "np.reddit.com",
+  "new.reddit.com",
+  "sh.reddit.com",
+  "m.reddit.com",
 ]);
 
 const TWITTER_HOSTS = new Set([
@@ -40,9 +46,35 @@ function getHost(url: string): string | null {
   }
 }
 
-function isRedditUrl(url: string): boolean {
+function getHostWithPort(url: string): string | null {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function normalizeConfiguredHost(host: string | null): string | null {
+  if (!host) return null;
+  const trimmed = host.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  if (trimmed.includes("://")) {
+    try {
+      return new URL(trimmed).host.toLowerCase();
+    } catch {
+      return trimmed.toLowerCase();
+    }
+  }
+  return trimmed.replace(/^\/\/+/, "").toLowerCase();
+}
+
+function isRedditUrl(url: string, redditProxyHost?: string | null): boolean {
   const host = getHost(url);
-  return host !== null && REDDIT_HOSTS.has(host);
+  if (host !== null && REDDIT_HOSTS.has(host)) return true;
+
+  const configuredProxyHost = normalizeConfiguredHost(redditProxyHost ?? null);
+  if (!configuredProxyHost) return false;
+  return getHostWithPort(url) === configuredProxyHost;
 }
 
 function isTwitterUrl(url: string): boolean {
@@ -76,8 +108,8 @@ function isPdfUrl(url: string): boolean {
 }
 
 // ── Session-scoped proxy disable state ─────────────────────────
-// When a proxy host fails during a session, we disable it and
-// fall through to regular HTTP fetch for the rest of the session.
+// Twitter/X proxy failures disable that proxy for the rest of the session and
+// fall through to regular HTTP. Reddit proxy failures are surfaced directly.
 
 const disabledProxyHosts = new Set<string>();
 const lastRequestByHost = new Map<string, number>();
@@ -122,7 +154,6 @@ export interface FetchUrlOptions {
   selector?: string;
   includeLinks?: boolean;
   verbose?: boolean;
-  maxComments?: number;
   allowImages?: boolean;
   cleanYouTubeDescription?: (description: string) => Promise<string>;
   signal?: AbortSignal;
@@ -151,17 +182,22 @@ export async function fetchUrl(
   try {
     // 1. Reddit
     const redditProxyHost = config.reddit.proxyHost;
-    if (isRedditUrl(url) && redditProxyHost && !isProxyDisabled(redditProxyHost)) {
-      try {
+    if (isRedditUrl(url, redditProxyHost)) {
+      if (redditProxyHost) {
         await throttle(redditProxyHost, config.reddit.rateLimitMs, options.signal);
         if (!redditModule) redditModule = await import("./reddit.js");
         result = await redditModule.fetchReddit(url, config, options);
         return finalize(result);
-      } catch (err) {
-        if (options.signal?.aborted) throw err;
-        disableProxy(redditProxyHost);
-        // Fall through to regular HTTP
       }
+
+      result = await httpFetch(url, {
+        timeoutMs: config.fetch.timeoutMs,
+        selector: options.selector,
+        includeLinks: options.includeLinks ?? config.fetch.includeLinks,
+        socksProxy: config.fetch.socksProxy,
+        signal: options.signal,
+      });
+      return finalize(addDirectRedditGuidance(result));
     }
 
     // 2. Twitter/X
@@ -223,6 +259,54 @@ export async function fetchUrl(
     const msg = err instanceof Error ? err.message : String(err);
     return { url, title: "", content: "", error: msg, truncated: false };
   }
+}
+
+function addDirectRedditGuidance(result: FetchResult): FetchResult {
+  const guidance = "Configure a Redlib-compatible proxy with PI_INTERNET_REDLIB_PROXY or piInternet.reddit.proxyHost to fetch Reddit reliably with structured comments.";
+  const detail = directRedditFailureDetail(result);
+
+  if (!detail) return result;
+
+  // Verification/challenge pages are not useful content, so suppress them and
+  // return an actionable error instead of spending context on Reddit's blocker.
+  if (isRedditVerificationContent(result)) {
+    return {
+      url: result.url,
+      title: result.title,
+      content: "",
+      error: `Direct Reddit fetch failed (${detail}). ${guidance}`,
+    };
+  }
+
+  if (result.content) {
+    return {
+      ...result,
+      error: result.error
+        ? `${result.error}. Direct Reddit fetch may be incomplete. ${guidance}`
+        : `Direct Reddit fetch may be incomplete. ${guidance}`,
+    };
+  }
+
+  return {
+    ...result,
+    error: `Direct Reddit fetch failed (${detail}). ${guidance}`,
+  };
+}
+
+function directRedditFailureDetail(result: FetchResult): string | null {
+  if (isRedditVerificationContent(result)) return "Reddit verification/block page returned";
+  if (result.error) return result.error;
+  if (!result.content.trim()) return "no readable content returned";
+  return null;
+}
+
+function isRedditVerificationContent(result: FetchResult): boolean {
+  const haystack = `${result.title}\n${result.content}`.toLowerCase();
+  return (
+    haystack.includes("reddit - please wait for verification") ||
+    haystack.includes("please wait for verification") ||
+    haystack.includes("js_challenge")
+  );
 }
 
 function finalize(result: FetchResult): FetchUrlResult {

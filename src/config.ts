@@ -202,11 +202,25 @@ function asString(val: unknown): string | undefined {
 }
 
 function resolveProxyHost(envName: string, rawValue: unknown): string | null {
-  return resolveProxyValue(envName, rawValue);
+  const value = resolveProxyValue(envName, rawValue);
+  if (!value) return null;
+  return normalizeProxyHost(value);
 }
 
 function resolveProxyValue(envName: string, rawValue: unknown): string | null {
   return asString(process.env[envName]) ?? asString(rawValue) ?? null;
+}
+
+function normalizeProxyHost(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (trimmed.includes("://")) {
+    try {
+      return new URL(trimmed).host.toLowerCase();
+    } catch {
+      return trimmed.toLowerCase();
+    }
+  }
+  return trimmed.replace(/^\/\/+/, "").toLowerCase();
 }
 
 function asBool(val: unknown): boolean | undefined {
@@ -221,4 +235,5 @@ function asPositiveInt(val: unknown): number | undefined {
 export const __test__ = {
   mergeWithDefaults,
   mergeObjects,
+  normalizeProxyHost,
 };

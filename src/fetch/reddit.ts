@@ -113,6 +113,8 @@ function extractComment(el: Element, depth: number, opAuthor: string): RedditCom
 
 // ── Rendering ──────────────────────────────────────────────────
 
+const DEFAULT_COMMENT_LIMIT = 20;
+
 function renderListing(posts: RedditPost[], subreddit: string): string {
   const lines = [`# ${subreddit}`, ""];
   for (const p of posts) {
@@ -132,7 +134,7 @@ function renderListing(posts: RedditPost[], subreddit: string): string {
   return lines.join("\n");
 }
 
-function renderThread(post: RedditPost, comments: RedditComment[], maxDepth: number, maxComments?: number): string {
+function renderThread(post: RedditPost, comments: RedditComment[], maxDepth: number, verbose: boolean): string {
   const lines: string[] = [];
   lines.push(`# ${post.title}`);
   const meta = [post.author, post.time];
@@ -143,27 +145,29 @@ function renderThread(post: RedditPost, comments: RedditComment[], maxDepth: num
   if (post.body) lines.push(post.body, "");
   lines.push("---");
 
-  const shown = maxComments != null ? comments.slice(0, maxComments) : comments;
-  let truncatedDepth = 0;
-  lines.push(`## Comments (${comments.length})`, "");
+  const shown = verbose ? comments : comments.slice(0, DEFAULT_COMMENT_LIMIT);
+  const totalComments = countComments(comments);
+  let hiddenComments = countComments(comments.slice(shown.length));
+  lines.push(`## Comments (${totalComments})`, "");
 
   for (const c of shown) {
-    truncatedDepth += renderComment(c, lines, maxDepth);
+    hiddenComments += renderComment(c, lines, maxDepth);
     lines.push("");
   }
 
-  const footerParts: string[] = [];
-  if (maxComments != null && maxComments < comments.length) {
-    footerParts.push(`Showing ${maxComments} of ${comments.length} top-level comments`);
-  }
-  if (truncatedDepth > 0) {
-    footerParts.push(`${truncatedDepth} nested reply thread(s) truncated at depth ${maxDepth}`);
-  }
-  if (footerParts.length > 0) {
-    lines.push(`*${footerParts.join(". ")}. Use verbose=true to see everything.*`);
+  if (hiddenComments > 0) {
+    lines.push(`*${hiddenComments}/${totalComments} parsed comments not displayed. Use \`verbose: true\` to see all comments and deeper replies.*`);
   }
 
   return lines.join("\n");
+}
+
+function countComments(comments: RedditComment[]): number {
+  let total = 0;
+  for (const comment of comments) {
+    total += 1 + countComments(comment.replies);
+  }
+  return total;
 }
 
 function renderComment(c: RedditComment, lines: string[], maxDepth: number, depth = 0): number {
@@ -173,15 +177,15 @@ function renderComment(c: RedditComment, lines: string[], maxDepth: number, dept
   lines.push(`${prefix}**${c.author}**${score}${op}, ${c.time}`);
   for (const bline of c.body.split("\n")) lines.push(`${prefix}${bline}`);
 
-  let truncated = 0;
+  let hidden = 0;
   if (c.replies.length > 0) {
     if (depth >= maxDepth) {
-      truncated += 1;
+      hidden += countComments(c.replies);
     } else {
-      for (const reply of c.replies) truncated += renderComment(reply, lines, maxDepth, depth + 1);
+      for (const reply of c.replies) hidden += renderComment(reply, lines, maxDepth, depth + 1);
     }
   }
-  return truncated;
+  return hidden;
 }
 
 // ── Public API ─────────────────────────────────────────────────
@@ -204,7 +208,7 @@ export async function fetchReddit(
     socksProxy: config.fetch.socksProxy,
   });
 
-  if (!res.ok) throw new Error(`Redlib proxy returned HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Reddit proxy ${proxyHost} returned HTTP ${res.status}`);
 
   const html = await res.text();
   const doc = parse(html);
@@ -229,8 +233,9 @@ export async function fetchReddit(
       comments.push(extractComment(el as Element, 0, post.author));
     }
 
-    const maxDepth = options.verbose ? 99 : config.reddit.commentDepth;
-    const content = renderThread(post, comments, maxDepth, options.maxComments);
+    const verbose = options.verbose ?? false;
+    const maxDepth = verbose ? Number.POSITIVE_INFINITY : config.reddit.commentDepth;
+    const content = renderThread(post, comments, maxDepth, verbose);
     return { url, title: post.title, content, error: null };
   }
 

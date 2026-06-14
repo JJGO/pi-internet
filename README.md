@@ -40,7 +40,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 |----------|---------|
 | **GitHub repos/files/trees** | Clones repo locally, returns tree + README or file content. Use `read`/`bash` on the local path. |
 | **GitHub PRs/issues/releases/Actions/gists/commits** | Uses `gh`/GitHub REST API and returns structured Markdown instead of brittle GitHub HTML extraction. Actions logs use progressive disclosure: `verbose: true` saves logs to a temp file and reports the path. |
-| **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments (depth 4). |
+| **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments. Non-verbose output is capped; use `verbose: true` for all parsed comments and deeper replies. |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **PDF** | Extracts text via unpdf. Large extractions are also saved to `~/Downloads/`. |
@@ -48,7 +48,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 
 - Links stripped by default (saves ~50 tokens/link). Set `includeLinks: true` to keep.
 - CSS selector support: `selector: ".docs-content"` narrows extraction.
-- `verbose: true` for Reddit: full comment depth. For Twitter: untruncated tweets. For YouTube collections: no internal entry cap.
+- `verbose: true` for Reddit: all parsed comments and full comment depth. For Twitter: untruncated tweets. For YouTube collections: no internal entry cap.
 - YouTube playlists/channels write full lists to `~/.cache/pi-internet/youtube-lists/`. Default output previews the first 25 items inline.
 - YouTube video fetches include screenshot instructions only when the active model advertises image input. To inspect a frame, fetch the same video URL with `&pi-internet-screenshot=HH:MM:SS`; frames are temporary JPEG files and are returned as image attachments.
 
@@ -133,7 +133,9 @@ Kagi also checks `~/.pi/kagi-search.json` and `~/.kagi_session_token` as fallbac
 
 `PI_INTERNET_SOCKS_PROXY` overrides `piInternet.fetch.socksProxy` when both are set.
 
-If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fall through to regular HTTP fetching.
+When `PI_INTERNET_REDLIB_PROXY` or `piInternet.reddit.proxyHost` is set, both normal Reddit URLs and URLs on that configured Redlib host are parsed with the Reddit handler.
+
+If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fall through to regular HTTP fetching. Direct Reddit fetches that fail include a hint to configure `PI_INTERNET_REDLIB_PROXY`.
 
 ### External dependencies
 
@@ -182,10 +184,10 @@ web_research(task)
 
 - Links stripped from extracted content by default
 - Images always stripped
-- Reddit comments capped at depth 4 with truncation notices
+- Reddit comments capped in non-verbose mode with truncation notices; use `verbose: true` for all parsed comments and deeper replies
 - Tweet content truncated to 500 chars in non-verbose mode
 - Output truncated to Pi's standard limits (50KB / 2000 lines)
-- Social proxy auto-disables on failure (falls through to HTTP for session)
+- Twitter/X proxy auto-disables on failure (falls through to HTTP for session); configured Reddit proxy failures are surfaced directly
 
 ## License
 

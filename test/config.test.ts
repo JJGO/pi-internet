@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { __test__ } from "../src/config.ts";
 
-const { mergeWithDefaults, mergeObjects } = __test__;
+const { mergeWithDefaults, mergeObjects, normalizeProxyHost } = __test__;
 
 function withEnv<T>(entries: Record<string, string | undefined>, fn: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -82,6 +82,11 @@ test("mergeWithDefaults: proxy env vars override config", () => {
   assert.equal(config.reddit.proxyHost, "redlib.internal.example");
   assert.equal(config.twitter.proxyHost, "nitter.internal.example");
   assert.equal(config.fetch.socksProxy, "socks5h://127.0.0.1:25344");
+});
+
+test("normalizeProxyHost: accepts hostnames and full URLs", () => {
+  assert.equal(normalizeProxyHost("Redlib.EXAMPLE"), "redlib.example");
+  assert.equal(normalizeProxyHost("https://redlib.example:8443/"), "redlib.example:8443");
 });
 
 test("mergeObjects: recursively merges nested config objects", () => {
