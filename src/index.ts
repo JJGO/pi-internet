@@ -26,6 +26,12 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
 const IS_SCOUT = process.env.PI_INTERNET_SCOUT === "1" || process.env.PI_WEB_SURF_SCOUT === "1";
+const OFFLINE_WARNING = "pi-internet disabled because PI_OFFLINE=1";
+
+function isOfflineModeEnabled(): boolean {
+  const value = process.env.PI_OFFLINE?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
 
 const DESCRIPTION_CLEANUP_PROMPT = `Clean this YouTube video description for an AI coding agent.
 
@@ -44,6 +50,17 @@ Remove:
 Return plain markdown, max ~2000 characters. If nothing useful remains, return an empty string.`;
 
 export default function piInternet(pi: ExtensionAPI) {
+  if (isOfflineModeEnabled()) {
+    pi.on("session_start", (_event, ctx) => {
+      if (ctx.hasUI) {
+        ctx.ui.notify(OFFLINE_WARNING, "warning");
+      } else {
+        console.warn(`[pi-internet] ${OFFLINE_WARNING}`);
+      }
+    });
+    return;
+  }
+
   // Config is loaded on-demand (never cached in closure) so session switches
   // always pick up changes. See REVIEW.md §1.1.
   function getConfig() { return loadConfig(); }

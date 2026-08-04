@@ -113,6 +113,8 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
 
 ### Environment variables
 
+When Pi starts with `--offline` or `PI_OFFLINE=1`, pi-internet registers no tools or commands and emits a warning.
+
 #### Search providers
 
 | Provider | Env Var |
