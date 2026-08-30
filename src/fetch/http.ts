@@ -12,6 +12,7 @@ import { Readability } from "@mozilla/readability";
 import { parse as parseDom } from "../util/dom.js";
 import { htmlToMarkdown, extractHeadingTitle, type MarkdownOptions } from "../util/markdown.js";
 import { extractRSCContent } from "./rsc.js";
+import { extractWithDefuddle } from "./defuddle.js";
 import { extractWithJinaReader } from "./jina.js";
 import { extractPdfFromBuffer } from "./pdf.js";
 import { combinedSignal } from "../util/signal.js";
@@ -159,7 +160,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     return { url, title, content: text, error: null };
   }
 
-  // HTML pipeline: Readability → RSC → Jina
+  // HTML pipeline: Readability → RSC → Defuddle → Jina
   const result = extractWithReadability(text, fetchUrl, options.selector, mdOptions);
   if (result && result.content.length >= MIN_USEFUL_CONTENT) {
     return { url, ...result, error: null };
@@ -169,6 +170,21 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   const rscResult = extractRSCContent(text);
   if (rscResult && rscResult.content.length >= MIN_USEFUL_CONTENT) {
     return { url, title: rscResult.title, content: rscResult.content, error: null };
+  }
+
+  // Defuddle fallback stays local and uses the existing Markdown output policy.
+  const defuddleResult = await extractWithDefuddle(
+    text,
+    response.url || fetchUrl,
+    options.selector,
+    mdOptions,
+    signal,
+  );
+  if (signal.aborted) {
+    return { url, title: "", content: "", error: `Request timed out (${timeoutMs}ms)` };
+  }
+  if (defuddleResult && defuddleResult.content.length >= MIN_USEFUL_CONTENT) {
+    return { url, title: result?.title || defuddleResult.title, content: defuddleResult.content, error: null };
   }
 
   // Jina Reader fallback for JS-rendered / blocked pages

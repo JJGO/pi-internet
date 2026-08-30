@@ -44,7 +44,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **PDF** | Extracts text via unpdf. Large extractions are also saved to `~/Downloads/`. |
-| **HTML** | Readability → RSC parser → Jina Reader fallback chain. |
+| **HTML** | Readability → RSC parser → local Defuddle → Jina Reader fallback chain. |
 
 - Links stripped by default (saves ~50 tokens/link). Set `includeLinks: true` to keep.
 - CSS selector support: `selector: ".docs-content"` narrows extraction.
@@ -174,7 +174,7 @@ fetch_url(url)
                Video → yt-dlp metadata + cleaned description + chapters + timestamped transcript
                Playlist/channel → yt-dlp flat JSON → first 25 inline + full list file
   → PDF?       unpdf extraction → inline markdown (+ save large outputs)
-  → HTTP?      Readability → RSC parser → Jina Reader fallback
+  → HTTP?      Readability → RSC parser → local Defuddle → Jina Reader fallback
 
 web_research(task)
   → Spawn scout: pi --mode json --no-session -e <this-ext>
@@ -200,7 +200,7 @@ MIT
 This project is a pragmatic blend of original code plus ideas and implementation patterns adapted from a few prior Pi- and web-fetch-related projects.
 
 - **Search** builds on patterns from `pi-websearch`, `pi-web-access`, and `pi-kagi-search` for provider routing, result normalization, and Kagi session-based scraping.
-- **Fetchers** reuse or adapt ideas from `pi-web-access`, `pi-fetch`,  for GitHub extraction, Readability/RSC/Jina fallback behavior, PDF extraction.
+- **Fetchers** reuse or adapt ideas from `pi-web-access` and `pi-fetch` for GitHub extraction, Readability/RSC/Defuddle/Jina fallback behavior, and PDF extraction.
 - **Research/scout mode** borrows the disposable subagent pattern from `pi-surf`.
 - **Utilities and glue code** were simplified, consolidated, or rewritten to fit this package, especially around config loading, markdown rendering, routing, and packaging.
 
