@@ -125,7 +125,7 @@ test("httpFetch handles extensionless and generically labeled PDFs through one p
       headers: { "content-type": "application/octet-stream" },
     });
     for (const url of ["https://example.com/download", "https://example.com/report.pdf"]) {
-      const result = await httpFetch(url, { socksProxy: null });
+      const result = await httpFetch(url, { socksProxy: null, allowPrivateNetworks: true });
       assert.equal(result.error, null);
       assert.match(result.content, /Hello from PDF/);
       assert.ok(result.artifacts?.pdf);
@@ -143,7 +143,7 @@ test("httpFetch rejects mislabeled non-PDF bytes before parsing", async () => {
     globalThis.fetch = async () => new Response("not a pdf", {
       headers: { "content-type": "application/pdf" },
     });
-    const result = await httpFetch("https://example.com/download", { socksProxy: null });
+    const result = await httpFetch("https://example.com/download", { socksProxy: null, allowPrivateNetworks: true });
     assert.match(result.error ?? "", /valid PDF signature/);
   } finally {
     globalThis.fetch = originalFetch;

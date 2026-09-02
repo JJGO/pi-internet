@@ -1,4 +1,4 @@
-import { fetchWithProxy } from "./proxy.js";
+import { safeFetch, type UrlLookup } from "./safe-fetch.js";
 
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 250;
@@ -8,6 +8,8 @@ export interface RetryFetchOptions {
   signal?: AbortSignal;
   socksProxy?: string | null;
   retries?: number;
+  allowPrivateNetworks?: boolean;
+  lookup?: UrlLookup;
 }
 
 export async function fetchWithTransientRetry(
@@ -29,8 +31,10 @@ export async function fetchWithTransientRetry(
       : AbortSignal.timeout(remainingMs);
 
     try {
-      const response = await fetchWithProxy(url, { ...init, signal }, {
+      const response = await safeFetch(url, { ...init, signal }, {
         socksProxy: options.socksProxy,
+        allowPrivateNetworks: options.allowPrivateNetworks,
+        lookup: options.lookup,
       });
       if (attempt === retries || !RETRYABLE_STATUSES.has(response.status)) return response;
 

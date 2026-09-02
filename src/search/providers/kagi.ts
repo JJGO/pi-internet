@@ -15,6 +15,9 @@ import { parseHTML } from "linkedom";
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
 import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
+import { readResponseText } from "../../util/download.js";
+
+const MAX_PROVIDER_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 const CONFIG_FILE = join(homedir(), ".pi", "kagi-search.json");
 const TOKEN_FILE = join(homedir(), ".kagi_session_token");
@@ -80,10 +83,13 @@ export const kagi: SearchProvider = {
           Cookie: `kagi_session=${token}`,
         },
         signal: options.signal,
+        redirect: "error",
       },
+      { socksProxy: options.socksProxy },
     );
 
     if (!res.ok) {
+      await res.body?.cancel();
       if (res.status === 401 || res.status === 403) {
         throw new SearchProviderError({
           provider: "kagi",
@@ -100,7 +106,7 @@ export const kagi: SearchProvider = {
       });
     }
 
-    const html = await res.text();
+    const html = await readResponseText(res, MAX_PROVIDER_RESPONSE_BYTES, options.signal);
     return parseKagiResults(html, limit);
   },
 };

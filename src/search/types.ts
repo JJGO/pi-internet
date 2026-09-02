@@ -19,6 +19,7 @@ export interface SearchOptions {
   numResults?: number;
   freshness?: "day" | "week" | "month" | "year";
   signal?: AbortSignal;
+  socksProxy?: string | null;
 }
 
 export interface SearchProvider {

@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface PiInternetConfig {
   searchProviders: string[];
@@ -38,7 +39,13 @@ export interface PiInternetConfig {
     includeLinks: boolean;
     timeoutMs: number;
     socksProxy: string | null;
+    allowPrivateNetworks: boolean;
   };
+}
+
+export interface ConfigLoadContext {
+  cwd: string;
+  isProjectTrusted?: () => boolean;
 }
 
 const CONFIG_KEY = "piInternet";
@@ -72,6 +79,7 @@ const DEFAULTS: PiInternetConfig = {
     includeLinks: true,
     timeoutMs: 30000,
     socksProxy: null,
+    allowPrivateNetworks: false,
   },
 };
 
@@ -80,16 +88,16 @@ const DEFAULTS: PiInternetConfig = {
  * This is just 2 readFileSync calls — negligible cost vs any fetch().
  * Avoids the stale-closure bug where a cached config survives session switches.
  */
-export function loadConfig(): PiInternetConfig {
-  const raw = loadRawConfig();
+export function loadConfig(context?: ConfigLoadContext): PiInternetConfig {
+  const raw = loadRawConfig(context);
   return mergeWithDefaults(raw);
 }
 
-function loadRawConfig(): Record<string, unknown> {
-  const paths = [
-    join(homedir(), ".pi", "agent", "settings.json"),
-    join(process.cwd(), ".pi", "settings.json"),
-  ];
+function loadRawConfig(context?: ConfigLoadContext): Record<string, unknown> {
+  const paths = [join(getAgentDir(), "settings.json")];
+  if (context?.isProjectTrusted?.()) {
+    paths.push(join(context.cwd, CONFIG_DIR_NAME, "settings.json"));
+  }
 
   let merged: Record<string, unknown> = {};
 
@@ -141,6 +149,7 @@ function mergeWithDefaults(raw: Record<string, unknown>): PiInternetConfig {
       includeLinks: asBool(get(raw, "fetch", "includeLinks")) ?? DEFAULTS.fetch.includeLinks,
       timeoutMs: asPositiveInt(get(raw, "fetch", "timeoutMs")) ?? DEFAULTS.fetch.timeoutMs,
       socksProxy: resolveProxyValue(SOCKS_PROXY_ENV, get(raw, "fetch", "socksProxy")),
+      allowPrivateNetworks: asBool(get(raw, "fetch", "allowPrivateNetworks")) ?? DEFAULTS.fetch.allowPrivateNetworks,
     },
   };
 }

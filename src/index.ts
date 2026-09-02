@@ -64,13 +64,14 @@ export default function piInternet(pi: ExtensionAPI) {
 
   // Config is loaded on-demand (never cached in closure) so session switches
   // always pick up changes.
-  function getConfig() { return loadConfig(); }
+  function getConfig(ctx: ExtensionContext) { return loadConfig(ctx); }
 
-  function getSearchRouter() {
-    const config = getConfig();
+  function getSearchRouter(ctx: ExtensionContext) {
+    const config = getConfig(ctx);
     return createSearchRouter({
       searchProviders: config.searchProviders,
       fallbackProviders: config.fallbackProviders,
+      socksProxy: config.fetch.socksProxy,
     });
   }
 
@@ -174,7 +175,7 @@ export default function piInternet(pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Cancelled" }], details: {} };
       }
@@ -186,7 +187,7 @@ export default function piInternet(pi: ExtensionAPI) {
         details: { status: "searching" },
       });
 
-      const { results, provider, errors, warnings } = await getSearchRouter().search({
+      const { results, provider, errors, warnings } = await getSearchRouter(ctx).search({
         query: params.query,
         numResults,
         freshness: params.freshness,
@@ -318,7 +319,7 @@ export default function piInternet(pi: ExtensionAPI) {
       });
 
       const allowImages = ctx.model?.input.includes("image") ?? false;
-      const result = await fetchUrl(params.url, getConfig(), {
+      const result = await fetchUrl(params.url, getConfig(ctx), {
         selector: params.selector,
         includeLinks: params.includeLinks,
         verbose: params.verbose,
@@ -401,7 +402,7 @@ export default function piInternet(pi: ExtensionAPI) {
   pi.registerCommand("search-providers", {
     description: "List configured search providers and their status",
     handler: async (_args, ctx) => {
-      const providers = getSearchRouter().listProviders();
+      const providers = getSearchRouter(ctx).listProviders();
       const lines = providers.map((p) => {
         const status = p.available ? "✓" : "✗";
         const disabled = p.disabledForSession
@@ -502,7 +503,7 @@ export default function piInternet(pi: ExtensionAPI) {
       }
 
       // Check if search is available for the scout
-      const hasSearch = getSearchRouter().listProviders().some(
+      const hasSearch = getSearchRouter(ctx).listProviders().some(
         (p) => p.available && p.role !== "unused",
       );
       if (hasQuery && !hasSearch) {

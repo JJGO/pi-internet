@@ -8,10 +8,13 @@
 
 import { parse, getText, getAttr, normalizeText, type Doc } from "../util/dom.js";
 import { combinedSignal } from "../util/signal.js";
-import { fetchWithProxy } from "../util/proxy.js";
+import { readResponseText } from "../util/download.js";
+import { safeFetch } from "../util/safe-fetch.js";
 import type { PiInternetConfig } from "../config.js";
 import type { FetchResult } from "./http.js";
 import type { FetchUrlOptions } from "./router.js";
+
+const MAX_PROXY_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -201,16 +204,22 @@ export async function fetchReddit(
   const proxyUrl = rewriteToProxy(url, proxyHost);
   const baseUrl = `https://${proxyHost}`;
 
-  const res = await fetchWithProxy(proxyUrl, {
+  const requestSignal = combinedSignal(options.signal, 15_000);
+  const res = await safeFetch(proxyUrl, {
     headers: { "User-Agent": "pi-internet/0.1" },
-    signal: combinedSignal(options.signal, 15_000),
+    signal: requestSignal,
   }, {
     socksProxy: config.fetch.socksProxy,
+    allowPrivateNetworks: config.fetch.allowPrivateNetworks,
+    lookup: options.lookup,
   });
 
-  if (!res.ok) throw new Error(`Reddit proxy ${proxyHost} returned HTTP ${res.status}`);
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`Reddit proxy ${proxyHost} returned HTTP ${res.status}`);
+  }
 
-  const html = await res.text();
+  const html = await readResponseText(res, MAX_PROXY_RESPONSE_BYTES, requestSignal);
   const doc = parse(html);
 
   if (isThreadUrl(url)) {

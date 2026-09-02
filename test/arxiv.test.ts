@@ -11,6 +11,7 @@ import {
 
 function config() {
   const value = loadConfig();
+  value.fetch.allowPrivateNetworks = true;
   value.fetch.socksProxy = null;
   value.fetch.timeoutMs = 5_000;
   return value;

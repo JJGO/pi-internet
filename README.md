@@ -113,13 +113,16 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
     "fetch": {
       "includeLinks": true,
       "timeoutMs": 30000,
-      "socksProxy": "socks5h://127.0.0.1:25344"
+      "socksProxy": "socks5h://127.0.0.1:25344",
+      "allowPrivateNetworks": false
     }
   }
 }
 ```
 
 `fetch.socksProxy` is optional and disabled by default. When set, pi-internet routes its outbound HTTP requests through that SOCKS proxy.
+
+Remote fetches reject localhost, private, link-local, and reserved network addresses, including redirect targets. Set `fetch.allowPrivateNetworks` to `true` only when you intentionally need local development servers or self-hosted proxies. Project settings are used only when Pi trusts the project.
 
 `github.clonePath` defaults to `~/.cache/pi-internet/github-repos` when omitted.
 

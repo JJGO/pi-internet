@@ -14,6 +14,7 @@
 
 import type { PiInternetConfig } from "../config.js";
 import { abortableDelay } from "../util/retry-fetch.js";
+import type { UrlLookup } from "../util/safe-fetch.js";
 import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
 
 // Lazy imports for specialized handlers (loaded on first use)
@@ -129,6 +130,7 @@ export interface FetchUrlOptions {
   allowImages?: boolean;
   cleanYouTubeDescription?: (description: string) => Promise<string>;
   signal?: AbortSignal;
+  lookup?: UrlLookup;
 }
 
 export interface FetchUrlResult {
@@ -174,6 +176,8 @@ export async function fetchUrl(
         includeLinks: options.includeLinks ?? config.fetch.includeLinks,
         socksProxy: config.fetch.socksProxy,
         signal: options.signal,
+        allowPrivateNetworks: config.fetch.allowPrivateNetworks,
+        lookup: options.lookup,
       });
       return addDirectRedditGuidance(result);
     }
@@ -223,6 +227,8 @@ export async function fetchUrl(
       includeLinks: options.includeLinks ?? config.fetch.includeLinks,
       socksProxy: config.fetch.socksProxy,
       signal: options.signal,
+      allowPrivateNetworks: config.fetch.allowPrivateNetworks,
+      lookup: options.lookup,
     });
     return result;
 

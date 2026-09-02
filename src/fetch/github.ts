@@ -11,13 +11,14 @@
  */
 
 import {
-  existsSync, readFileSync, readdirSync, statSync,
+  existsSync, readFileSync, readdirSync, statSync, lstatSync,
   openSync, readSync, closeSync, mkdirSync, rmSync, writeFileSync,
 } from "node:fs";
-import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
+import { extname, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import { applySocksProxyEnv, fetchWithProxy } from "../util/proxy.js";
 import { execCommand as execShared, type ExecResult } from "../util/exec.js";
+import { readResponseJson } from "../util/download.js";
 import type { FetchResult } from "./http.js";
 import { checkGhAvailable, fetchGitHubResource, parseGitHubResourceUrl, resetGitHubApiState } from "./github-api.js";
 
@@ -63,6 +64,7 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 
   const owner = segments[0];
   const repo = segments[1].replace(/\.git$/, "");
+  if (!isSafeGitHubOwner(owner) || !isSafeGitHubRepo(repo)) return null;
 
   if (NON_CODE_SEGMENTS.has(segments[2]?.toLowerCase())) return null;
 
@@ -100,10 +102,19 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
   };
 }
 
+function isSafeGitHubOwner(value: string): boolean {
+  return /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(value);
+}
+
+function isSafeGitHubRepo(value: string): boolean {
+  return value !== "." && value !== ".." && /^[a-z\d_.-]{1,100}$/i.test(value);
+}
+
 // ── Clone cache (persistent on disk, deduped in memory) ─────────
 
 const cloneCache = new Map<string, Promise<CloneResult>>();
 const GIT_TIMEOUT_MS = 30_000;
+const MAX_GITHUB_API_RESPONSE_BYTES = 1024 * 1024;
 
 interface CloneMetadata {
   activePath: string;
@@ -304,11 +315,15 @@ async function checkRepoSize(owner: string, repo: string, socksProxy: string | n
     const res = await fetchWithProxy(`https://api.github.com/repos/${owner}/${repo}`, {
       headers: { Accept: "application/vnd.github.v3+json", "User-Agent": "pi-internet" },
       signal: AbortSignal.timeout(10_000),
+      redirect: "error",
     }, {
       socksProxy,
     });
-    if (!res.ok) return null;
-    const data = await res.json();
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
+    const data = await readResponseJson<{ size?: unknown }>(res, MAX_GITHUB_API_RESPONSE_BYTES);
     return typeof data.size === "number" ? data.size : null;
   } catch {
     return null;
@@ -547,9 +562,10 @@ function buildTree(rootPath: string): string {
       if (entries.length >= MAX_TREE_ENTRIES) return;
       if (item === ".git") continue;
       const rel = relPath ? `${relPath}/${item}` : item;
-      const fullPath = resolvePath(rootPath, rel);
+      const fullPath = resolveInsideClone(rootPath, rel);
+      if (!fullPath) continue;
       let stat;
-      try { stat = statSync(fullPath); } catch { continue; }
+      try { stat = lstatSync(fullPath); } catch { continue; }
       if (stat.isDirectory()) {
         if (NOISE_DIRS.has(item)) { skippedDirs.push(item); continue; }
         entries.push(`${rel}/`);
@@ -575,9 +591,10 @@ interface ReadmeResult {
 
 function readReadme(localPath: string): ReadmeResult | null {
   for (const name of ["README.md", "readme.md", "README", "README.txt", "README.rst"]) {
-    const p = join(localPath, name);
-    if (!existsSync(p)) continue;
+    const p = resolveInsideClone(localPath, name);
+    if (!p || !existsSync(p)) continue;
     try {
+      if (!lstatSync(p).isFile()) continue;
       const content = readFileSync(p, "utf-8");
       return {
         name,
@@ -591,8 +608,18 @@ function readReadme(localPath: string): ReadmeResult | null {
 function resolveInsideClone(localPath: string, relPath: string): string | null {
   const root = resolvePath(localPath);
   const fullPath = resolvePath(root, relPath || ".");
-  if (fullPath === root || fullPath.startsWith(root + pathSep)) return fullPath;
-  return null;
+  if (fullPath !== root && !fullPath.startsWith(root + pathSep)) return null;
+
+  let current = root;
+  for (const segment of relative(root, fullPath).split(pathSep).filter(Boolean)) {
+    current = join(current, segment);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return null;
+    } catch {
+      break;
+    }
+  }
+  return fullPath;
 }
 
 function generateContent(localPath: string, info: GitHubUrlInfo): string {
@@ -618,7 +645,9 @@ function generateContent(localPath: string, info: GitHubUrlInfo): string {
       try {
         for (const item of readdirSync(fullPath).sort()) {
           if (item === ".git") continue;
-          const s = statSync(resolvePath(fullPath, item));
+          const itemPath = resolveInsideClone(localPath, join(dirPath, item));
+          if (!itemPath) continue;
+          const s = lstatSync(itemPath);
           lines.push(s.isDirectory() ? `  ${item}/` : `  ${item}  (${formatFileSize(s.size)})`);
         }
       } catch { lines.push("  (directory not readable)"); }

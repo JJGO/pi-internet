@@ -37,6 +37,7 @@ test("httpFetch: uses Defuddle after Readability and RSC return too little conte
   const result = await httpFetch(`http://127.0.0.1:${address.port}/start`, {
     includeLinks: true,
     socksProxy: null,
+    allowPrivateNetworks: true,
   });
 
   assert.equal(result.error, null);

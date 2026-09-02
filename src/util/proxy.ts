@@ -1,4 +1,5 @@
-import { socksDispatcher } from "fetch-socks";
+import { socksConnector, socksDispatcher } from "fetch-socks";
+import { Agent, buildConnector } from "undici";
 import { loadConfig } from "../config.js";
 
 type SupportedSocksProtocol = "socks:" | "socks4:" | "socks4a:" | "socks5:" | "socks5h:";
@@ -25,8 +26,15 @@ const SUPPORTED_PROTOCOLS = new Set<SupportedSocksProtocol>([
 
 const dispatcherCache = new Map<string, unknown>();
 
+export interface PinnedConnection {
+  hostname: string;
+  address: string;
+  family: 4 | 6;
+}
+
 export interface ProxyOptions {
   socksProxy?: string | null;
+  connection?: PinnedConnection;
 }
 
 export function resolveSocksProxy(options?: ProxyOptions): string | null {
@@ -80,21 +88,45 @@ export function parseSocksProxyUrl(url: string): ParsedSocksProxy {
 
 export function getSocksDispatcher(options?: ProxyOptions): unknown {
   const socksProxy = resolveSocksProxy(options);
+  const connection = options?.connection;
+  if (connection) return getPinnedDispatcher(connection, socksProxy);
   if (!socksProxy) return undefined;
 
   const cached = dispatcherCache.get(socksProxy);
   if (cached) return cached;
 
-  const parsed = parseSocksProxyUrl(socksProxy);
-  const dispatcher = socksDispatcher({
-    type: parsed.type,
-    host: parsed.host,
-    port: parsed.port,
-    userId: parsed.userId,
-    password: parsed.password,
-  });
-
+  const dispatcher = socksDispatcher(parseSocksProxyUrl(socksProxy));
   dispatcherCache.set(socksProxy, dispatcher);
+  return dispatcher;
+}
+
+function getPinnedDispatcher(connection: PinnedConnection, socksProxy: string | null): Agent {
+  const key = [socksProxy ?? "direct", connection.hostname, connection.address, connection.family].join("\0");
+  const cached = dispatcherCache.get(key);
+  if (cached) return cached as Agent;
+
+  let dispatcher: Agent;
+  if (socksProxy) {
+    const connector = socksConnector(parseSocksProxyUrl(socksProxy), { servername: connection.hostname });
+    dispatcher = new Agent({
+      connect(options, callback) {
+        connector({
+          ...options,
+          hostname: connection.address,
+          servername: connection.hostname,
+        }, callback);
+      },
+    });
+  } else {
+    const connector = buildConnector({
+      lookup(_hostname, _options, callback) {
+        callback(null, connection.address, connection.family);
+      },
+    });
+    dispatcher = new Agent({ connect: connector });
+  }
+
+  dispatcherCache.set(key, dispatcher);
   return dispatcher;
 }
 

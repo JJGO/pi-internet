@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { downloadResponseToFile, readResponseText } from "../src/util/download.ts";
+import { downloadResponseToFile, readResponseJson, readResponseText } from "../src/util/download.ts";
 
 test("downloadResponseToFile enforces actual streamed bytes without Content-Length", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-internet-download-test-"));
@@ -52,7 +52,16 @@ test("downloadResponseToFile records bytes, header, and hash while writing", asy
   }
 });
 
-test("readResponseText enforces the actual byte limit", async () => {
+test("readResponseText enforces declared and actual byte limits", async () => {
+  await assert.rejects(
+    readResponseText(new Response("small", { headers: { "content-length": "100" } }), 10),
+    /exceeds/,
+  );
   await assert.rejects(readResponseText(new Response("éé"), 3), /exceeds/);
   assert.equal(await readResponseText(new Response("éé"), 4), "éé");
+});
+
+test("readResponseJson parses only bounded response bodies", async () => {
+  assert.deepEqual(await readResponseJson<{ ok: boolean }>(new Response('{"ok":true}'), 32), { ok: true });
+  await assert.rejects(readResponseJson(new Response('{"value":"too long"}'), 8), /exceeds/);
 });

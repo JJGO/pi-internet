@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import { fetchWithProxy } from "../util/proxy.js";
+import { readResponseJson } from "../util/download.js";
 import { execCommand, type ExecResult } from "../util/exec.js";
 import type { FetchResult } from "./http.js";
 
@@ -22,6 +23,7 @@ const MAX_BODY_CHARS = 20_000;
 const MAX_COMMENT_CHARS = 12_000;
 const MAX_INLINE_GIST_FILE_CHARS = 40_000;
 const MAX_INLINE_RELEASE_ASSETS = 30;
+const MAX_REST_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export type GitHubResourceRoute =
   | { kind: "user"; login: string; url: string }
@@ -120,9 +122,13 @@ async function restJson<T>(path: string, config: PiInternetConfig, signal?: Abor
     const res = await fetchWithProxy(`https://api.github.com/${path.replace(/^\/+/, "")}`, {
       headers,
       signal,
+      redirect: "error",
     }, { socksProxy: config.fetch.socksProxy });
-    if (!res.ok) return null;
-    return await res.json() as T;
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
+    return await readResponseJson<T>(res, MAX_REST_RESPONSE_BYTES, signal);
   } catch {
     return null;
   }

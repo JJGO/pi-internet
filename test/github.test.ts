@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -36,6 +36,7 @@ function makeConfig(clonePath: string): PiInternetConfig {
       includeLinks: false,
       timeoutMs: 30_000,
       socksProxy: null,
+      allowPrivateNetworks: true,
     },
   };
 }
@@ -153,6 +154,12 @@ test("parseGitHubUrl: non-GitHub URL returns null", () => {
   assert.equal(parseGitHubUrl("https://gitlab.com/user/repo"), null);
 });
 
+test("parseGitHubUrl: rejects identifiers that could escape the clone cache", () => {
+  assert.equal(parseGitHubUrl("https://github.com/%2e%2e/repo"), null);
+  assert.equal(parseGitHubUrl("https://github.com/user/%2e%2e"), null);
+  assert.equal(parseGitHubUrl("https://github.com/user/repo%2foutside"), null);
+});
+
 test("parseGitHubUrl: too few segments returns null", () => {
   assert.equal(parseGitHubUrl("https://github.com/user"), null);
 });
@@ -195,6 +202,41 @@ test("fetchGitHub: bare repo includes README before structure", async () => {
   } finally {
     clearCloneCache();
     globalThis.fetch = originalFetch;
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fetchGitHub rejects symlinks in README, tree, and blob rendering", { skip: process.platform === "win32" }, async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-symlink-"));
+
+  try {
+    const repoPath = join(tempRoot, "user", "repo");
+    const outsidePath = join(tempRoot, "outside");
+    mkdirSync(join(repoPath, ".git"), { recursive: true });
+    mkdirSync(outsidePath, { recursive: true });
+    writeFileSync(join(outsidePath, "secret.txt"), "outside-secret");
+    symlinkSync(join(outsidePath, "secret.txt"), join(repoPath, "README.md"));
+    symlinkSync(outsidePath, join(repoPath, "linked-dir"), "dir");
+    symlinkSync(join(outsidePath, "secret.txt"), join(repoPath, "linked-file.txt"));
+    writeCacheMetadata(tempRoot, "user", "repo", repoPath);
+    writeCacheMetadata(tempRoot, "user", "repo", repoPath, "main");
+
+    clearCloneCache();
+    const root = await fetchGitHub("https://github.com/user/repo", makeConfig(tempRoot));
+    assert.ok(root);
+    assert.doesNotMatch(root.content, /outside-secret|README\.md|linked-dir|linked-file/);
+
+    const blob = await fetchGitHub("https://github.com/user/repo/blob/main/linked-file.txt", makeConfig(tempRoot));
+    assert.ok(blob);
+    assert.doesNotMatch(blob.content, /outside-secret/);
+    assert.match(blob.content, /outside the repository checkout/);
+
+    const tree = await fetchGitHub("https://github.com/user/repo/tree/main/linked-dir", makeConfig(tempRoot));
+    assert.ok(tree);
+    assert.doesNotMatch(tree.content, /outside-secret/);
+    assert.match(tree.content, /outside the repository checkout/);
+  } finally {
+    clearCloneCache();
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });

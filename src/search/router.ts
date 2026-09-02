@@ -27,6 +27,7 @@ const ALL_PROVIDERS: Record<string, SearchProvider> = {
 export interface SearchRouterConfig {
   searchProviders: string[];
   fallbackProviders: string[];
+  socksProxy?: string | null;
 }
 
 export interface SearchRouterResult {
@@ -47,6 +48,7 @@ export interface SearchProviderStatus {
 const DEFAULT_CONFIG: SearchRouterConfig = {
   searchProviders: ["brave", "kagi"],
   fallbackProviders: ["tavily"],
+  socksProxy: null,
 };
 
 export function createSearchRouter(
@@ -56,6 +58,7 @@ export function createSearchRouter(
   const resolved: SearchRouterConfig = {
     searchProviders: config.searchProviders ?? DEFAULT_CONFIG.searchProviders,
     fallbackProviders: config.fallbackProviders ?? DEFAULT_CONFIG.fallbackProviders,
+    socksProxy: config.socksProxy ?? DEFAULT_CONFIG.socksProxy,
   };
 
   return {
@@ -74,7 +77,7 @@ export function createSearchRouter(
         }
 
         try {
-          const results = await provider.search({ ...options, numResults, signal: options.signal });
+          const results = await provider.search({ ...options, numResults, signal: options.signal, socksProxy: resolved.socksProxy });
           return { results: results.slice(0, numResults), provider: provider.name, errors, warnings };
         } catch (error) {
           const providerError = recordProviderFailure(provider.name, error, errors, warnings);
@@ -96,7 +99,7 @@ export function createSearchRouter(
 
       if (primaries.length > 0) {
         const settled = await Promise.allSettled(
-          primaries.map((provider) => provider.search({ ...options, numResults, signal: options.signal })),
+          primaries.map((provider) => provider.search({ ...options, numResults, signal: options.signal, socksProxy: resolved.socksProxy })),
         );
 
         for (let i = 0; i < settled.length; i++) {
@@ -121,7 +124,7 @@ export function createSearchRouter(
 
         for (const provider of fallbackCandidates) {
           try {
-            const results = await provider.search({ ...options, numResults, signal: options.signal });
+            const results = await provider.search({ ...options, numResults, signal: options.signal, socksProxy: resolved.socksProxy });
             mergedResultSets.push(results);
             merged = mergeResults(mergedResultSets, numResults);
             fallbackProvidersUsed.push(provider.name);

@@ -22,6 +22,7 @@ import {
 import { readResponseText } from "../util/download.js";
 import { fetchWithTransientRetry } from "../util/retry-fetch.js";
 import { combinedSignal } from "../util/signal.js";
+import type { UrlLookup } from "../util/safe-fetch.js";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -54,6 +55,8 @@ export interface HttpFetchOptions {
   socksProxy?: string | null;
   signal?: AbortSignal;
   retryTransient?: boolean;
+  allowPrivateNetworks?: boolean;
+  lookup?: UrlLookup;
 }
 
 /**
@@ -120,12 +123,13 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
         Accept: "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
       },
-      redirect: "follow",
     }, {
       timeoutMs,
       signal,
       socksProxy: options.socksProxy,
       retries: options.retryTransient ? 1 : 0,
+      allowPrivateNetworks: options.allowPrivateNetworks,
+      lookup: options.lookup,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -161,6 +165,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     contentType.includes("video/") ||
     contentType.includes("application/zip")
   ) {
+    await response.body?.cancel();
     return { url, title: "", content: "", error: `Unsupported content type: ${contentType.split(";")[0]}` };
   }
 
@@ -207,7 +212,10 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   }
 
   // Jina Reader fallback for JS-rendered / blocked pages
-  const jinaResult = await extractWithJinaReader(url, options.signal, options.socksProxy);
+  const jinaResult = await extractWithJinaReader(url, options.signal, options.socksProxy, {
+    allowPrivateNetworks: options.allowPrivateNetworks,
+    lookup: options.lookup,
+  });
   if (jinaResult) {
     return jinaResult;
   }

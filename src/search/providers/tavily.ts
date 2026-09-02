@@ -8,6 +8,10 @@
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
 import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
+import { readResponseJson, readResponseText } from "../../util/download.js";
+
+const MAX_PROVIDER_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
 
 export const tavily: SearchProvider = {
   name: "tavily",
@@ -38,18 +42,19 @@ export const tavily: SearchProvider = {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
       signal: options.signal,
-    });
+      redirect: "error",
+    }, { socksProxy: options.socksProxy });
 
     if (!res.ok) {
       throw new SearchProviderError({
         provider: "tavily",
-        message: `Tavily API error (${res.status}): ${await res.text()}`,
+        message: `Tavily API error (${res.status}): ${await readResponseText(res, MAX_ERROR_RESPONSE_BYTES, options.signal)}`,
         statusCode: res.status,
         code: "http",
       });
     }
 
-    const data = await res.json();
+    const data = await readResponseJson<any>(res, MAX_PROVIDER_RESPONSE_BYTES, options.signal);
     return (data.results ?? []).map(
       (r: { title: string; url: string; content: string; published_date?: string }) => ({
         title: r.title,

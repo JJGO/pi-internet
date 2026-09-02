@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { __test__ } from "../src/config.ts";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { loadConfig, __test__ } from "../src/config.ts";
 
 const { mergeWithDefaults, mergeObjects, normalizeProxyHost } = __test__;
 
@@ -41,6 +45,7 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   assert.equal(config.fetch.includeLinks, true);
   assert.equal(config.fetch.timeoutMs, 1234);
   assert.equal(config.fetch.socksProxy, "socks5h://127.0.0.1:25344");
+  assert.equal(config.fetch.allowPrivateNetworks, false);
   assert.equal(config.github.enabled, true);
   assert.equal(config.github.refreshTtlMs, 12345);
 });
@@ -66,6 +71,7 @@ test("mergeWithDefaults: invalid values fall back to defaults", () => {
   assert.equal(config.fetch.includeLinks, true);
   assert.equal(config.fetch.timeoutMs, 30000);
   assert.equal(config.fetch.socksProxy, null);
+  assert.equal(config.fetch.allowPrivateNetworks, false);
 });
 
 test("mergeWithDefaults: proxy env vars override config", () => {
@@ -87,6 +93,37 @@ test("mergeWithDefaults: proxy env vars override config", () => {
 test("normalizeProxyHost: accepts hostnames and full URLs", () => {
   assert.equal(normalizeProxyHost("Redlib.EXAMPLE"), "redlib.example");
   assert.equal(normalizeProxyHost("https://redlib.example:8443/"), "redlib.example:8443");
+});
+
+test("loadConfig reads project settings only for trusted projects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-internet-config-"));
+  const agentDir = join(root, "agent");
+  const cwd = join(root, "project");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(join(cwd, CONFIG_DIR_NAME), { recursive: true });
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+      piInternet: { fetch: { timeoutMs: 1111 } },
+    }));
+    await writeFile(join(cwd, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({
+      piInternet: { fetch: { timeoutMs: 2222, allowPrivateNetworks: true } },
+    }));
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const untrusted = loadConfig({ cwd, isProjectTrusted: () => false });
+    assert.equal(untrusted.fetch.timeoutMs, 1111);
+    assert.equal(untrusted.fetch.allowPrivateNetworks, false);
+
+    const trusted = loadConfig({ cwd, isProjectTrusted: () => true });
+    assert.equal(trusted.fetch.timeoutMs, 2222);
+    assert.equal(trusted.fetch.allowPrivateNetworks, true);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("mergeObjects: recursively merges nested config objects", () => {

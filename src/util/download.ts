@@ -67,17 +67,21 @@ export async function downloadResponseToFile(
   };
 }
 
-export async function readResponseText(
+export async function readResponseBuffer(
   response: Response,
   maxBytes: number,
   signal?: AbortSignal,
-): Promise<string> {
-  if (!response.body) return "";
+): Promise<Uint8Array> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel();
+    throw new Error(`Response exceeds the ${formatMiB(maxBytes)} limit`);
+  }
+  if (!response.body) return new Uint8Array();
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
   let bytes = 0;
-  let text = "";
 
   try {
     while (true) {
@@ -89,13 +93,30 @@ export async function readResponseText(
         throw new Error(`Response exceeds the ${formatMiB(maxBytes)} limit`);
       }
       bytes += value.byteLength;
-      text += decoder.decode(value, { stream: true });
+      chunks.push(value);
     }
-    return text + decoder.decode();
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), bytes);
   } catch (error) {
     await reader.cancel().catch(() => {});
     throw error;
   }
+}
+
+export async function readResponseText(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const buffer = await readResponseBuffer(response, maxBytes, signal);
+  return new TextDecoder().decode(buffer);
+}
+
+export async function readResponseJson<T>(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  return JSON.parse(await readResponseText(response, maxBytes, signal)) as T;
 }
 
 function formatMiB(bytes: number): string {

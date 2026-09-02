@@ -274,12 +274,12 @@ async function requestArxiv(url: string, config: PiInternetConfig, signal: Abort
       "User-Agent": USER_AGENT,
       Accept: "text/html,application/xhtml+xml,application/pdf,application/gzip,*/*;q=0.8",
     },
-    redirect: "follow",
   }, {
     timeoutMs: config.fetch.timeoutMs,
     signal,
     socksProxy: config.fetch.socksProxy,
     retries: 1,
+    allowPrivateNetworks: config.fetch.allowPrivateNetworks,
   });
 }
 

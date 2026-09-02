@@ -13,31 +13,41 @@ import type { FetchResult } from "./http.js";
 import { combinedSignal } from "../util/signal.js";
 import { fetchWithProxy } from "../util/proxy.js";
 import { extractHeadingTitle } from "../util/markdown.js";
+import { readResponseText } from "../util/download.js";
+import { validateUserUrl, type UserUrlPolicy } from "../util/safe-fetch.js";
 
 const JINA_READER_BASE = "https://r.jina.ai/";
 const JINA_TIMEOUT_MS = 30_000;
+const MAX_JINA_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export async function extractWithJinaReader(
   url: string,
   signal?: AbortSignal,
   socksProxy?: string | null,
+  policy: UserUrlPolicy = {},
 ): Promise<FetchResult | null> {
   const jinaUrl = JINA_READER_BASE + url;
 
   try {
+    await validateUserUrl(url, policy);
+    const requestSignal = combinedSignal(signal, JINA_TIMEOUT_MS);
     const res = await fetchWithProxy(jinaUrl, {
       headers: {
         Accept: "text/markdown",
         "X-No-Cache": "true",
       },
-      signal: combinedSignal(signal, JINA_TIMEOUT_MS),
+      signal: requestSignal,
+      redirect: "error",
     }, {
       socksProxy,
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
 
-    const content = await res.text();
+    const content = await readResponseText(res, MAX_JINA_RESPONSE_BYTES, requestSignal);
 
     // Jina returns metadata then "Markdown Content:" then the actual content
     const contentStart = content.indexOf("Markdown Content:");

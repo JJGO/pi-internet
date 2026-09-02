@@ -34,6 +34,7 @@ function makeConfig(overrides: Partial<PiInternetConfig> = {}): PiInternetConfig
       includeLinks: false,
       timeoutMs: 1000,
       socksProxy: null,
+      allowPrivateNetworks: true,
       ...overrides.fetch,
     },
   };

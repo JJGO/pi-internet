@@ -8,6 +8,10 @@
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
 import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
+import { readResponseJson, readResponseText } from "../../util/download.js";
+
+const MAX_PROVIDER_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
 
 export const brave: SearchProvider = {
   name: "brave",
@@ -32,10 +36,11 @@ export const brave: SearchProvider = {
         Accept: "application/json",
       },
       signal: options.signal,
-    });
+      redirect: "error",
+    }, { socksProxy: options.socksProxy });
 
     if (!res.ok) {
-      const body = await res.text();
+      const body = await readResponseText(res, MAX_ERROR_RESPONSE_BYTES, options.signal);
       const usageLimitExceeded = res.status === 402 && /USAGE_LIMIT_EXCEEDED|Usage limit exceeded/i.test(body);
       if (res.status === 429 || usageLimitExceeded) {
         throw new SearchProviderError({
@@ -60,7 +65,7 @@ export const brave: SearchProvider = {
       });
     }
 
-    const data = await res.json();
+    const data = await readResponseJson<any>(res, MAX_PROVIDER_RESPONSE_BYTES, options.signal);
     return (data.web?.results ?? []).map(
       (r: { title: string; url: string; description: string; extra_snippets?: string[] }) => ({
         title: r.title,
