@@ -14,9 +14,14 @@ import { htmlToMarkdown, extractHeadingTitle, type MarkdownOptions } from "../ut
 import { extractRSCContent } from "./rsc.js";
 import { extractWithDefuddle } from "./defuddle.js";
 import { extractWithJinaReader } from "./jina.js";
-import { extractPdfFromBuffer } from "./pdf.js";
+import {
+  downloadAndExtractPdf,
+  finalizePdfResult,
+  renderGenericPdfPreamble,
+} from "./pdf.js";
+import { readResponseText } from "../util/download.js";
+import { fetchWithTransientRetry } from "../util/retry-fetch.js";
 import { combinedSignal } from "../util/signal.js";
-import { fetchWithProxy } from "../util/proxy.js";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -24,12 +29,22 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB
 const MIN_USEFUL_CONTENT = 500;
 
+export interface FetchArtifacts {
+  pdf?: string;
+  markdown?: string;
+  sourceDownload?: string;
+  sourceDirectory?: string;
+  sourceManifest?: string;
+}
+
 export interface FetchResult {
   url: string;
   title: string;
   content: string;
   error: string | null;
   images?: Array<{ data: string; mimeType: string }>;
+  fullOutputPath?: string;
+  artifacts?: FetchArtifacts;
 }
 
 export interface HttpFetchOptions {
@@ -38,6 +53,7 @@ export interface HttpFetchOptions {
   includeLinks?: boolean;
   socksProxy?: string | null;
   signal?: AbortSignal;
+  retryTransient?: boolean;
 }
 
 /**
@@ -45,6 +61,14 @@ export interface HttpFetchOptions {
  *
  * Provenance: pi-fetch/extensions/fetch.ts (rewriteGithubBlobUrlToRaw)
  */
+function isPdfPath(url: string): boolean {
+  try {
+    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
+  } catch {
+    return false;
+  }
+}
+
 export function rewriteGithubBlobToRaw(url: string): string {
   try {
     const parsed = new URL(url);
@@ -83,24 +107,25 @@ export function isLikelyJSRendered(html: string): boolean {
 export async function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<FetchResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const mdOptions: MarkdownOptions = { includeLinks: options.includeLinks };
+  const signal = combinedSignal(options.signal, timeoutMs);
 
   // Rewrite GitHub blob URLs to raw for direct file access
   const fetchUrl = rewriteGithubBlobToRaw(url);
 
-  const signal = combinedSignal(options.signal, timeoutMs);
-
   let response: Response;
   try {
-    response = await fetchWithProxy(fetchUrl, {
-      signal,
+    response = await fetchWithTransientRetry(fetchUrl, {
       headers: {
         "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
       },
       redirect: "follow",
     }, {
+      timeoutMs,
+      signal,
       socksProxy: options.socksProxy,
+      retries: options.retryTransient ? 1 : 0,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -111,40 +136,40 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   }
 
   if (!response.ok) {
+    await response.body?.cancel();
     return { url, title: "", content: "", error: `HTTP ${response.status}: ${response.statusText}` };
   }
 
-  // Check content-length before reading body
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && parseInt(contentLength, 10) > MAX_RESPONSE_BYTES) {
-    return {
-      url,
-      title: "",
-      content: "",
-      error: `Response too large (${Math.round(parseInt(contentLength, 10) / 1024 / 1024)}MB)`,
-    };
-  }
-
   const contentType = response.headers.get("content-type") || "";
+  const normalizedContentType = contentType.toLowerCase();
+  const pdfCandidate = normalizedContentType.includes("pdf")
+    || normalizedContentType.includes("application/octet-stream")
+    || isPdfPath(fetchUrl);
 
-  // Binary content → skip
-  // PDF detected by content-type (catches URLs without .pdf extension, e.g. arxiv)
-  if (contentType.includes("application/pdf")) {
-    const buffer = await response.arrayBuffer();
-    return extractPdfFromBuffer(buffer, url);
+  if (pdfCandidate) {
+    try {
+      const extraction = await downloadAndExtractPdf(response, url, signal);
+      return await finalizePdfResult(extraction, renderGenericPdfPreamble(extraction));
+    } catch (error) {
+      return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   if (
     contentType.includes("image/") ||
     contentType.includes("audio/") ||
     contentType.includes("video/") ||
-    contentType.includes("application/zip") ||
-    contentType.includes("application/octet-stream")
+    contentType.includes("application/zip")
   ) {
     return { url, title: "", content: "", error: `Unsupported content type: ${contentType.split(";")[0]}` };
   }
 
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await readResponseText(response, MAX_RESPONSE_BYTES, signal);
+  } catch (error) {
+    return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
+  }
   const isHTML =
     contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
 

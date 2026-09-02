@@ -8,10 +8,9 @@ import {
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 
-interface FullOutputOptions {
-  prefix: string;
-  filename: string;
-}
+type FullOutputOptions =
+  | { existingPath: string }
+  | { prefix: string; filename: string };
 
 interface TruncateToolTextOptions {
   continuation: string;
@@ -33,13 +32,22 @@ export async function truncateToolText(
     maxBytes: DEFAULT_MAX_BYTES,
   });
 
-  if (!truncation.truncated) return { text };
+  if (!truncation.truncated) {
+    if (options.fullOutput && "existingPath" in options.fullOutput) {
+      return { text, fullOutputPath: options.fullOutput.existingPath };
+    }
+    return { text };
+  }
 
   let fullOutputPath: string | undefined;
   if (options.fullOutput) {
-    const directory = await mkdtemp(join(tmpdir(), options.fullOutput.prefix));
-    fullOutputPath = join(directory, options.fullOutput.filename);
-    await writeFile(fullOutputPath, text, { encoding: "utf8", mode: 0o600 });
+    if ("existingPath" in options.fullOutput) {
+      fullOutputPath = options.fullOutput.existingPath;
+    } else {
+      const directory = await mkdtemp(join(tmpdir(), options.fullOutput.prefix));
+      fullOutputPath = join(directory, options.fullOutput.filename);
+      await writeFile(fullOutputPath, text, { encoding: "utf8", mode: 0o600 });
+    }
   }
 
   const location = fullOutputPath ? ` Full output: ${fullOutputPath}.` : "";

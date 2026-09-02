@@ -1,5 +1,5 @@
 /**
- * HTML → Markdown conversion with token-efficient defaults.
+ * HTML → Markdown conversion with research-friendly defaults.
  *
  * Provenance:
  * - pi-surf/extensions/index.ts: link stripping by default (~50 tokens/link saved)
@@ -13,7 +13,7 @@ import TurndownService from "turndown";
 let td: TurndownService | null = null;
 
 export interface MarkdownOptions {
-  /** Keep hyperlinks in output (default: false — saves tokens) */
+  /** Keep hyperlinks in output (default: true) */
   includeLinks?: boolean;
 }
 
@@ -30,8 +30,8 @@ function createTurndown(options: MarkdownOptions = {}): TurndownService {
     replacement: () => "",
   });
 
-  // Strip links by default to save tokens (~50 tokens per link)
-  if (!options.includeLinks) {
+  // Callers can explicitly strip links for compact reading.
+  if (options.includeLinks === false) {
     service.addRule("stripLinks", {
       filter: "a",
       replacement: (_content: string, node: any) => node.textContent || "",
@@ -60,7 +60,7 @@ export function extractHeadingTitle(text: string): string | null {
 const turndownCache = new Map<boolean, TurndownService>();
 
 function getTurndown(options: MarkdownOptions): TurndownService {
-  const key = options.includeLinks ?? false;
+  const key = options.includeLinks ?? true;
   const cached = turndownCache.get(key);
   if (cached) return cached;
   const td = createTurndown(options);

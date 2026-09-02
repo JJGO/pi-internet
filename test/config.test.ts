@@ -63,7 +63,7 @@ test("mergeWithDefaults: invalid values fall back to defaults", () => {
   assert.equal(config.github.enabled, true);
   assert.equal(config.github.maxRepoSizeMB, 350);
   assert.equal(config.github.refreshTtlMs, 300000);
-  assert.equal(config.fetch.includeLinks, false);
+  assert.equal(config.fetch.includeLinks, true);
   assert.equal(config.fetch.timeoutMs, 30000);
   assert.equal(config.fetch.socksProxy, null);
 });

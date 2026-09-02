@@ -43,14 +43,30 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 | **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments. Non-verbose output is capped; use `verbose: true` for all parsed comments and deeper replies. |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
-| **PDF** | Extracts text via unpdf. Large extractions are also saved to `~/Downloads/`. |
+| **arXiv** | Respects `/abs`, `/html`, `/pdf`, and `/src`. Every result starts with authoritative representation links from the abstract page. PDF and source requests expose private temporary artifacts. |
+| **PDF** | Streams at most 20 MiB, retains the original PDF and extracted Markdown in a private OS-temporary directory, and extracts up to 100 pages via unpdf. |
 | **HTML** | Readability → RSC parser → local Defuddle → Jina Reader fallback chain. |
 
-- Links stripped by default (saves ~50 tokens/link). Set `includeLinks: true` to keep.
+- Links are kept by default so research can continue through cited sources. Set `includeLinks: false` for compact link-free output.
 - CSS selector support: `selector: ".docs-content"` narrows extraction.
 - `verbose: true` for Reddit: all parsed comments and full comment depth. For Twitter: untruncated tweets. For YouTube collections: no internal entry cap.
 - YouTube playlists/channels write full lists to `~/.cache/pi-internet/youtube-lists/`. Default output previews the first 25 items inline.
 - YouTube video fetches include screenshot instructions only when the active model advertises image input. To inspect a frame, fetch the same video URL with `&pi-internet-screenshot=HH:MM:SS`; frames are temporary JPEG files and are returned as image attachments.
+
+#### arXiv representations
+
+`fetch_url` preserves the representation in the URL:
+
+- `/abs/<id>` returns metadata, abstract, version history, license, ancillary files, and available representation links.
+- `/html/<id>` returns official semantic HTML as Markdown. It keeps TeX equations, figure captions and image links, citations, and table structure.
+- `/pdf/<id>` retains `document.pdf` and `document.md`, then returns bounded text-layer extraction inline.
+- `/src/<id>` retains the original payload, safely unpacks recognized tar/gzip source, and returns a manifest, compact file tree, likely root TeX path, and bounded preview.
+
+Successful abstract manifests are cached for the Pi process. Explicit older revisions remain selected and receive a prominent latest-version warning. Missing formats are reported without silently substituting another representation.
+
+PDF and source artifacts use private OS-temporary directories. The OS eventually removes them; pi-internet does not promise cleanup at session termination. Source extraction never follows links or executes TeX. It rejects traversal, links, devices, duplicate paths, and oversized archives. Limits are 50 MiB downloaded, 250 MiB expanded, 10,000 entries, and 100 MiB per file.
+
+The default PDF parser reads only the text layer. It does not faithfully reconstruct complex layouts, equations, tables, figures, or scans. If representative tests demonstrate a need for OCR or spatial parsing, evaluate LiteParse as an optional isolated backend rather than silently changing the default.
 
 ### `web_research` (hidden by default)
 
@@ -95,7 +111,7 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
       "enabled": true
     },
     "fetch": {
-      "includeLinks": false,
+      "includeLinks": true,
       "timeoutMs": 30000,
       "socksProxy": "socks5h://127.0.0.1:25344"
     }
@@ -173,8 +189,9 @@ fetch_url(url)
   → YouTube?   Video + pi-internet-screenshot? → yt-dlp stream URL → ffmpeg frame → image attachment
                Video → yt-dlp metadata + cleaned description + chapters + timestamped transcript
                Playlist/channel → yt-dlp flat JSON → first 25 inline + full list file
-  → PDF?       unpdf extraction → inline markdown (+ save large outputs)
-  → HTTP?      Readability → RSC parser → local Defuddle → Jina Reader fallback
+  → arXiv?     /abs manifest → requested HTML, PDF, source, or abstract representation
+  → HTTP/PDF?  one streamed HTTP path → PDF signature + unpdf, or HTML/text extraction
+  → HTML?      Readability → RSC parser → local Defuddle → Jina Reader fallback
 
 web_research(task)
   → Spawn scout: pi --mode json --no-session -e <this-ext>
@@ -184,8 +201,8 @@ web_research(task)
 
 ## Token Efficiency
 
-- Links stripped from extracted content by default
-- Images always stripped
+- Links are preserved by default; `includeLinks: false` strips ordinary extracted-content links while keeping arXiv representation navigation
+- Generic HTML images are stripped; arXiv HTML keeps figure captions and image URLs without attaching image binaries
 - Reddit comments capped in non-verbose mode with truncation notices; use `verbose: true` for all parsed comments and deeper replies
 - Tweet content truncated to 500 chars in non-verbose mode
 - All tool text is truncated to Pi's standard limits (50KB / 2000 lines)

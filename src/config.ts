@@ -73,7 +73,7 @@ const DEFAULTS: PiInternetConfig = {
     enabled: true,
   },
   fetch: {
-    includeLinks: false,
+    includeLinks: true,
     timeoutMs: 30000,
     socksProxy: null,
   },

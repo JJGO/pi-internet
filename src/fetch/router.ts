@@ -4,21 +4,21 @@
  * Provenance: pi-web-access/extract.ts (URL classification order, fallback orchestration).
  *
  * Routing order:
- * 1. Reddit → Redlib proxy parser
- * 2. Twitter/X → Nitter proxy parser
- * 3. GitHub → clone code locally or fetch collaboration surfaces via API
- * 4. YouTube → yt-dlp transcript
- * 5. PDF → text extraction
- * 6. HTTP → Readability → RSC → Jina fallback chain
+ * 1. arXiv → representation-aware paper fetcher
+ * 2. Reddit → Redlib proxy parser
+ * 3. Twitter/X → Nitter proxy parser
+ * 4. GitHub → clone code locally or fetch collaboration surfaces via API
+ * 5. YouTube → yt-dlp transcript
+ * 6. HTTP → content classification and extraction
  */
 
 import type { PiInternetConfig } from "../config.js";
-import { httpFetch, type FetchResult, type HttpFetchOptions } from "./http.js";
+import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
 
 // Lazy imports for specialized handlers (loaded on first use)
+let arxivModule: typeof import("./arxiv.js") | null = null;
 let githubModule: typeof import("./github.js") | null = null;
 let youtubeModule: typeof import("./youtube.js") | null = null;
-let pdfModule: typeof import("./pdf.js") | null = null;
 let redditModule: typeof import("./reddit.js") | null = null;
 let twitterModule: typeof import("./twitter.js") | null = null;
 
@@ -99,14 +99,6 @@ function isYouTubeUrl(url: string): boolean {
   );
 }
 
-function isPdfUrl(url: string): boolean {
-  try {
-    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
-  } catch {
-    return false;
-  }
-}
-
 // ── Session-scoped proxy disable state ─────────────────────────
 // Twitter/X proxy failures disable that proxy for the rest of the session and
 // fall through to regular HTTP. Reddit proxy failures are surfaced directly.
@@ -165,6 +157,8 @@ export interface FetchUrlResult {
   content: string;
   error: string | null;
   images?: Array<{ data: string; mimeType: string }>;
+  fullOutputPath?: string;
+  artifacts?: FetchArtifacts;
 }
 
 export async function fetchUrl(
@@ -179,7 +173,12 @@ export async function fetchUrl(
   let result: FetchResult;
 
   try {
-    // 1. Reddit
+    // 1. arXiv
+    if (!arxivModule) arxivModule = await import("./arxiv.js");
+    const arxivResult = await arxivModule.fetchArxiv(url, config, options);
+    if (arxivResult) return arxivResult;
+
+    // 2. Reddit
     const redditProxyHost = config.reddit.proxyHost;
     if (isRedditUrl(url, redditProxyHost)) {
       if (redditProxyHost) {
@@ -199,7 +198,7 @@ export async function fetchUrl(
       return addDirectRedditGuidance(result);
     }
 
-    // 2. Twitter/X
+    // 3. Twitter/X
     const twitterProxyHost = config.twitter.proxyHost;
     if (isTwitterUrl(url) && twitterProxyHost && !isProxyDisabled(twitterProxyHost)) {
       try {
@@ -214,7 +213,7 @@ export async function fetchUrl(
       }
     }
 
-    // 3. GitHub
+    // 4. GitHub
     if (isGitHubUrl(url) && config.github.enabled) {
       if (!githubModule) githubModule = await import("./github.js");
       const ghResult = await githubModule.fetchGitHub(url, config, options.signal, {
@@ -225,7 +224,7 @@ export async function fetchUrl(
       // null means "not a supported GitHub URL" — fall through to HTTP
     }
 
-    // 4. YouTube
+    // 5. YouTube
     if (isYouTubeUrl(url) && config.youtube.enabled) {
       if (!youtubeModule) youtubeModule = await import("./youtube.js");
       result = await youtubeModule.fetchYouTube(url, {
@@ -237,14 +236,7 @@ export async function fetchUrl(
       return result;
     }
 
-    // 5. PDF (by URL extension — content-type check happens in httpFetch)
-    if (isPdfUrl(url)) {
-      if (!pdfModule) pdfModule = await import("./pdf.js");
-      result = await pdfModule.fetchPdf(url, options.signal, config.fetch.socksProxy);
-      return result;
-    }
-
-    // 6. Regular HTTP with fallback chain
+    // 6. Regular HTTP with content-type routing and fallback chain
     result = await httpFetch(url, {
       timeoutMs: config.fetch.timeoutMs,
       selector: options.selector,

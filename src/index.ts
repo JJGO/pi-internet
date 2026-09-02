@@ -307,7 +307,7 @@ export default function piInternet(pi: ExtensionAPI) {
         Type.String({ description: "CSS selector to narrow extraction (e.g. 'main', '.docs-content')" }),
       ),
       includeLinks: Type.Optional(
-        Type.Boolean({ description: "Keep hyperlinks in output (default: false, saves tokens)" }),
+        Type.Boolean({ description: "Keep hyperlinks in output (default: true; set false for compact reading)" }),
       ),
       verbose: Type.Optional(
         Type.Boolean({ description: "Full content: all parsed Reddit comments/deeper replies, untruncated tweets" }),
@@ -347,7 +347,9 @@ export default function piInternet(pi: ExtensionAPI) {
 
       const output = await truncateToolText(text, {
         continuation: "Use the read tool on the full-output file to inspect omitted content.",
-        fullOutput: { prefix: "pi-internet-fetch-", filename: "output.md" },
+        fullOutput: result.fullOutputPath
+          ? { existingPath: result.fullOutputPath }
+          : { prefix: "pi-internet-fetch-", filename: "output.md" },
       });
 
       return {
@@ -366,6 +368,7 @@ export default function piInternet(pi: ExtensionAPI) {
           fullOutputPath: output.fullOutputPath,
           error: result.error,
           imageCount: result.images?.length ?? 0,
+          artifacts: result.artifacts,
         },
       };
     },

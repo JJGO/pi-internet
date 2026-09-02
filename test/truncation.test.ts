@@ -42,6 +42,18 @@ test("truncateToolText: applies the byte limit to UTF-8 output", async () => {
   assert.ok(Buffer.byteLength(output.text, "utf8") <= DEFAULT_MAX_BYTES);
 });
 
+test("truncateToolText: reuses an existing complete-output artifact", async () => {
+  const existingPath = "/tmp/existing-document.md";
+  const text = "report line\n".repeat(DEFAULT_MAX_LINES + 1);
+  const output = await truncateToolText(text, {
+    continuation: "Read the full report.",
+    fullOutput: { existingPath },
+  });
+
+  assert.equal(output.fullOutputPath, existingPath);
+  assert.match(output.text, /Full output: \/tmp\/existing-document\.md/);
+});
+
 test("truncateToolText: saves complete output when requested", async () => {
   const text = "report line\n".repeat(DEFAULT_MAX_LINES + 1);
   const output = await truncateToolText(text, {

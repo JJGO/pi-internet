@@ -1,147 +1,190 @@
-/**
- * PDF text extraction — fetch, extract, save as markdown.
- *
- * Provenance: pi-web-access/pdf-extract.ts
- * Borrowed: unpdf extraction, page-by-page text with markers, metadata extraction,
- * save-to-file pattern, arxiv URL title handling.
- */
-
-import { getDocumentProxy } from "unpdf";
-import { writeFile, mkdir } from "node:fs/promises";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { readFile, rm, writeFile, mkdtemp, chmod } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { getDocumentProxy, resolvePDFJSImport } from "unpdf";
+import * as bundledPdfJs from "unpdf/pdfjs";
 import type { FetchResult } from "./http.js";
-import { combinedSignal } from "../util/signal.js";
-import { fetchWithProxy } from "../util/proxy.js";
+import { downloadResponseToFile } from "../util/download.js";
 
-const DEFAULT_OUTPUT_DIR = join(homedir(), "Downloads");
-const DEFAULT_MAX_PAGES = 100;
-const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20MB
+export const MAX_PDF_BYTES = 20 * 1024 * 1024;
+export const DEFAULT_MAX_PAGES = 100;
 
-/**
- * Fetch a PDF from a URL, extract text, return markdown.
- */
-export async function fetchPdf(
-  url: string,
-  signal?: AbortSignal,
-  socksProxy?: string | null,
-): Promise<FetchResult> {
-  let response: Response;
-  try {
-    response = await fetchWithProxy(url, {
-      signal: combinedSignal(signal, 60_000),
-      headers: { "User-Agent": "pi-internet/0.1" },
-    }, {
-      socksProxy,
-    });
-  } catch (err) {
-    return { url, title: "", content: "", error: `Failed to fetch PDF: ${err instanceof Error ? err.message : err}` };
-  }
-
-  if (!response.ok) {
-    return { url, title: "", content: "", error: `HTTP ${response.status}: ${response.statusText}` };
-  }
-
-  const ct = response.headers.get("content-type") || "";
-  if (!ct.includes("pdf") && !url.toLowerCase().endsWith(".pdf")) {
-    return { url, title: "", content: "", error: "URL does not point to a PDF" };
-  }
-
-  const buffer = await response.arrayBuffer();
-  return extractPdfFromBuffer(buffer, url);
+export interface PdfExtraction {
+  url: string;
+  title: string;
+  author: string;
+  content: string;
+  error: string | null;
+  pageCount: number;
+  extractedPages: number;
+  pdfPath: string;
+  markdownPath: string;
 }
 
-/**
- * Extract text from a PDF buffer. Called by fetchPdf() after downloading,
- * and by httpFetch() when content-type is application/pdf (REVIEW §2.2).
- */
-export async function extractPdfFromBuffer(buffer: ArrayBuffer, url: string): Promise<FetchResult> {
-  if (buffer.byteLength > MAX_PDF_BYTES) {
-    return { url, title: "", content: "", error: `PDF too large (${Math.round(buffer.byteLength / 1024 / 1024)}MB)` };
+let pdfJsConfigured = false;
+
+async function configurePdfJs(): Promise<void> {
+  if (pdfJsConfigured) return;
+  await resolvePDFJSImport(async () => bundledPdfJs);
+  pdfJsConfigured = true;
+}
+
+export function hasPdfSignature(header: Uint8Array): boolean {
+  return Buffer.from(header).indexOf("%PDF-") >= 0;
+}
+
+export async function downloadAndExtractPdf(
+  response: Response,
+  url: string,
+  signal?: AbortSignal,
+): Promise<PdfExtraction> {
+  const directory = await mkdtemp(join(tmpdir(), "pi-internet-pdf-"));
+  await chmod(directory, 0o700);
+  const pdfPath = join(directory, "document.pdf");
+  const markdownPath = join(directory, "document.md");
+
+  try {
+    const download = await downloadResponseToFile(response, pdfPath, MAX_PDF_BYTES, signal);
+    if (!hasPdfSignature(download.header)) {
+      throw new Error("Response does not have a valid PDF signature");
+    }
+    return await extractPdfFromFile(pdfPath, markdownPath, url, signal);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
   }
+}
 
-  // Extract text
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
-  const metadata = await pdf.getMetadata();
-  const metaInfo = metadata.info && typeof metadata.info === "object"
-    ? metadata.info as Record<string, unknown>
-    : null;
+export async function extractPdfFromFile(
+  pdfPath: string,
+  markdownPath: string,
+  url: string,
+  signal?: AbortSignal,
+): Promise<PdfExtraction> {
+  signal?.throwIfAborted();
+  await configurePdfJs();
+  const data = await readFile(pdfPath);
+  if (data.byteLength > MAX_PDF_BYTES) throw new Error("PDF exceeds the 20 MiB limit");
 
-  const metaTitle = typeof metaInfo?.Title === "string" ? metaInfo.Title.trim() : "";
-  const metaAuthor = typeof metaInfo?.Author === "string" ? metaInfo.Author.trim() : "";
-  const title = metaTitle || extractTitleFromUrl(url);
+  const pdf = await getDocumentProxy(new Uint8Array(data));
+  try {
+    signal?.throwIfAborted();
+    const metadata = await pdf.getMetadata();
+    const info = metadata.info && typeof metadata.info === "object"
+      ? metadata.info as Record<string, unknown>
+      : null;
+    const title = stringMetadata(info?.Title) || extractTitleFromUrl(url);
+    const author = stringMetadata(info?.Author);
+    const extractedPages = Math.min(pdf.numPages, DEFAULT_MAX_PAGES);
+    const pages: Array<{ page: number; text: string }> = [];
 
-  const pagesToExtract = Math.min(pdf.numPages, DEFAULT_MAX_PAGES);
-  const truncated = pdf.numPages > DEFAULT_MAX_PAGES;
+    for (let pageNumber = 1; pageNumber <= extractedPages; pageNumber++) {
+      signal?.throwIfAborted();
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      let text = "";
+      for (const item of textContent.items as Array<{ str?: string; hasEOL?: boolean }>) {
+        if (!item.str) continue;
+        text += item.str;
+        text += item.hasEOL ? "\n" : " ";
+      }
+      pages.push({
+        page: pageNumber,
+        text: text.replace(/[ \t]+\n/g, "\n").replace(/[ \t]{2,}/g, " ").trim(),
+      });
+    }
 
-  const pages: string[] = [];
-  for (let i = 1; i <= pagesToExtract; i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    const text = textContent.items
-      .map((item: unknown) => (item as { str?: string }).str || "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (text) pages.push(text);
+    const populatedPages = pages.filter((page) => page.text);
+    const lines: string[] = [];
+    if (populatedPages.length === 0) {
+      lines.push(
+        "> ⚠️ No extractable text layer was found. This PDF may be scanned or image-only and may require OCR.",
+      );
+    } else {
+      for (const page of populatedPages) {
+        if (lines.length > 0) lines.push("");
+        lines.push(`<!-- Page ${page.page} -->`, "", page.text);
+      }
+    }
+
+    if (pdf.numPages > extractedPages) {
+      lines.push(
+        "",
+        `> ⚠️ Extracted pages 1–${extractedPages} of ${pdf.numPages}. The complete PDF is available at ${pdfPath}.`,
+      );
+    }
+
+    return {
+      url,
+      title,
+      author,
+      content: lines.join("\n"),
+      error: populatedPages.length === 0 ? "PDF has no extractable text layer; OCR may be required" : null,
+      pageCount: pdf.numPages,
+      extractedPages,
+      pdfPath,
+      markdownPath,
+    };
+  } finally {
+    await pdf.destroy();
   }
+}
 
-  // Build markdown
-  const lines: string[] = [
-    `# ${title}`,
+export async function finalizePdfResult(
+  extraction: PdfExtraction,
+  preamble: string,
+  title = extraction.title,
+): Promise<FetchResult> {
+  const content = [preamble.trim(), extraction.content.trim()].filter(Boolean).join("\n\n---\n\n");
+  const warning = extraction.error ? `\n\n> ⚠️ ${extraction.error}` : "";
+  await writeFile(extraction.markdownPath, `# ${title}\n\n${content}${warning}`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return {
+    url: extraction.url,
+    title,
+    content,
+    error: extraction.error,
+    fullOutputPath: extraction.markdownPath,
+    artifacts: {
+      pdf: extraction.pdfPath,
+      markdown: extraction.markdownPath,
+    },
+  };
+}
+
+export function renderGenericPdfPreamble(extraction: PdfExtraction): string {
+  const pages = extraction.pageCount > extraction.extractedPages
+    ? `${extraction.extractedPages} of ${extraction.pageCount}`
+    : String(extraction.pageCount);
+  const lines = [
+    "## PDF artifacts",
     "",
-    `> Source: ${url}`,
-    `> Pages: ${pdf.numPages}${truncated ? ` (extracted first ${pagesToExtract})` : ""}`,
+    `- Original PDF: ${extraction.pdfPath}`,
+    `- Extracted Markdown: ${extraction.markdownPath}`,
+    `- Pages extracted: ${pages}`,
   ];
-  if (metaAuthor) lines.push(`> Author: ${metaAuthor}`);
-  lines.push("", "---", "");
+  if (extraction.author) lines.push(`- Author: ${extraction.author}`);
+  lines.push(
+    "",
+    "> Extraction reads the PDF text layer. Layout, tables, equations, figures, and scans may not be represented faithfully.",
+  );
+  return lines.join("\n");
+}
 
-  for (let i = 0; i < pages.length; i++) {
-    if (i > 0) lines.push("", `<!-- Page ${i + 2} -->`, "");
-    lines.push(pages[i]);
-  }
-
-  if (truncated) {
-    lines.push("", "---", "", `*[Truncated: Only first ${pagesToExtract} of ${pdf.numPages} pages extracted]*`);
-  }
-
-  const mdContent = lines.join("\n");
-
-  // Only save to ~/Downloads when content is large (>50KB).
-  // Small PDFs are returned inline without side-effects.
-  const SAVE_THRESHOLD = 50 * 1024;
-  let content: string;
-
-  if (mdContent.length > SAVE_THRESHOLD) {
-    const outputFilename = sanitizeFilename(title) + ".md";
-    const outputPath = join(DEFAULT_OUTPUT_DIR, outputFilename);
-    await mkdir(DEFAULT_OUTPUT_DIR, { recursive: true });
-    await writeFile(outputPath, mdContent, "utf-8");
-    content = `PDF extracted and saved to: ${outputPath}\n\nPages: ${pdf.numPages}\nCharacters: ${mdContent.length}\n\n---\n\n${mdContent}`;
-  } else {
-    content = mdContent;
-  }
-
-  return { url, title, content, error: null };
+function stringMetadata(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function extractTitleFromUrl(url: string): string {
   try {
-    const parsed = new URL(url);
-    let filename = basename(parsed.pathname, ".pdf");
-
-    // Arxiv: /pdf/1706.03762 → "arxiv-1706.03762"
-    if (parsed.hostname.includes("arxiv.org")) {
-      const match = parsed.pathname.match(/\/(?:pdf|abs)\/(\d+\.\d+)/);
-      if (match) filename = `arxiv-${match[1]}`;
-    }
-
-    return filename.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || "document";
+    const pathname = new URL(url).pathname;
+    return basename(pathname, ".pdf")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || "document";
   } catch {
     return "document";
   }
-}
-
-function sanitizeFilename(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").slice(0, 100).replace(/^-|-$/g, "") || "document";
 }

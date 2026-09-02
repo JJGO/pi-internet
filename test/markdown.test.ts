@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractHeadingTitle } from "../src/util/markdown.ts";
+import { extractHeadingTitle, htmlToMarkdown } from "../src/util/markdown.ts";
 
 test("extractHeadingTitle: extracts H1", () => {
   assert.equal(extractHeadingTitle("# Hello World\n\nContent"), "Hello World");
@@ -24,4 +24,10 @@ test("extractHeadingTitle: ignores H3+", () => {
 
 test("extractHeadingTitle: returns null for empty heading", () => {
   assert.equal(extractHeadingTitle("# "), null);
+});
+
+test("htmlToMarkdown keeps links by default and supports explicit compact mode", () => {
+  const html = '<p>Read <a href="https://example.com/paper">the paper</a>.</p>';
+  assert.equal(htmlToMarkdown(html), "Read [the paper](https://example.com/paper).");
+  assert.equal(htmlToMarkdown(html, { includeLinks: false }), "Read the paper.");
 });
