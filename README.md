@@ -125,8 +125,6 @@ Settings live in Pi's settings files (`~/.pi/agent/settings.json` or `.pi/settin
 
 `github.refreshTtlMs` defaults to 300000 (5 minutes). Cached repos are refreshed with `git fetch` + hard reset when they are older than the TTL. If the cached clone has local edits, pi-internet keeps it untouched and creates a fresh sibling clone instead.
 
-`piWebSurf` is still accepted as a legacy config key for backward compatibility, but `piInternet` is preferred.
-
 ### Environment variables
 
 When Pi starts with `--offline` or `PI_OFFLINE=1`, pi-internet registers no tools or commands and emits a warning.

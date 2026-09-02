@@ -86,7 +86,7 @@ export async function runScout(
         cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_INTERNET_SCOUT: "1", PI_WEB_SURF_SCOUT: "1" },
+        env: { ...process.env, PI_INTERNET_SCOUT: "1" },
       });
 
       let buffer = "";

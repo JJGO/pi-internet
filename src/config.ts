@@ -5,8 +5,7 @@
  * pi-web-access/github-extract.ts (config normalization with safe defaults).
  *
  * Config lives in Pi's settings files (~/.pi/agent/settings.json or .pi/settings.json)
- * under the `piInternet` key. The legacy `piWebSurf` key is also supported
- * for backward compatibility. API keys, optional social proxy hosts, and
+ * under the `piInternet` key. API keys, optional social proxy hosts, and
  * the optional SOCKS proxy can come from environment variables.
  */
 
@@ -42,10 +41,7 @@ export interface PiInternetConfig {
   };
 }
 
-export type PiWebSurfConfig = PiInternetConfig;
-
-const CURRENT_CONFIG_KEY = "piInternet";
-const LEGACY_CONFIG_KEY = "piWebSurf";
+const CONFIG_KEY = "piInternet";
 const REDLIB_PROXY_ENV = "PI_INTERNET_REDLIB_PROXY";
 const NITTER_PROXY_ENV = "PI_INTERNET_NITTER_PROXY";
 const SOCKS_PROXY_ENV = "PI_INTERNET_SOCKS_PROXY";
@@ -116,16 +112,7 @@ function loadRawConfig(): Record<string, unknown> {
 
 function extractProjectConfig(parsed: unknown): Record<string, unknown> | null {
   if (!isPlainObject(parsed)) return null;
-
-  const legacy = isPlainObject(parsed[LEGACY_CONFIG_KEY])
-    ? parsed[LEGACY_CONFIG_KEY] as Record<string, unknown>
-    : null;
-  const current = isPlainObject(parsed[CURRENT_CONFIG_KEY])
-    ? parsed[CURRENT_CONFIG_KEY] as Record<string, unknown>
-    : null;
-
-  if (legacy && current) return mergeObjects(legacy, current);
-  return current ?? legacy;
+  return isPlainObject(parsed[CONFIG_KEY]) ? parsed[CONFIG_KEY] as Record<string, unknown> : null;
 }
 
 function mergeWithDefaults(raw: Record<string, unknown>): PiInternetConfig {

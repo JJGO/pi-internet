@@ -26,7 +26,7 @@ import { throwTruncatedToolError, truncateToolText } from "./util/truncation.js"
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
-const IS_SCOUT = process.env.PI_INTERNET_SCOUT === "1" || process.env.PI_WEB_SURF_SCOUT === "1";
+const IS_SCOUT = process.env.PI_INTERNET_SCOUT === "1";
 const OFFLINE_WARNING = "pi-internet disabled because PI_OFFLINE=1";
 
 function isOfflineModeEnabled(): boolean {
