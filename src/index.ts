@@ -22,6 +22,7 @@ import { fetchUrl, resetProxyState } from "./fetch/router.js";
 import { clearCloneCache } from "./fetch/github.js";
 import { runScout, resolveScoutModel, buildScoutPrompt } from "./research/scout.js";
 import { resetSocksProxyDispatchers } from "./util/proxy.js";
+import { throwTruncatedToolError, truncateToolText } from "./util/truncation.js";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
@@ -154,7 +155,9 @@ export default function piInternet(pi: ExtensionAPI) {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the web using configured providers. Returns relevant results with titles, URLs, and snippets. Leave provider unset unless the user explicitly requests a specific search engine.",
+      "Search the web using configured providers. Returns relevant results with titles, URLs, and snippets. " +
+      "Leave provider unset unless the user explicitly requests a specific search engine. " +
+      "Output is truncated to 50KB or 2000 lines, whichever is hit first.",
     promptSnippet: "Search the web and return results with titles, URLs, and snippets",
     promptGuidelines: [
       "Use web_search when you need to find information, documentation, or current data from the internet.",
@@ -186,7 +189,7 @@ export default function piInternet(pi: ExtensionAPI) {
       const numResults = Math.min(Math.max(params.numResults ?? DEFAULT_NUM_RESULTS, 1), MAX_NUM_RESULTS);
 
       onUpdate?.({
-        content: [{ type: "text", text: `Searching for "${params.query}"...` }],
+        content: [{ type: "text", text: "Searching the web..." }],
         details: { status: "searching" },
       });
 
@@ -196,12 +199,14 @@ export default function piInternet(pi: ExtensionAPI) {
         freshness: params.freshness,
         provider: params.provider,
         signal: signal ?? undefined,
+      }).catch(throwTruncatedToolError);
+
+      const output = await truncateToolText(formatResults(results), {
+        continuation: "Refine the query or request fewer results to see omitted content.",
       });
 
-      const text = formatResults(results);
-
       return {
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: output.text }],
         details: {
           provider,
           resultCount: results.length,
@@ -209,6 +214,7 @@ export default function piInternet(pi: ExtensionAPI) {
           errors: errors.length > 0 ? errors : undefined,
           warnings: warnings.length > 0 ? warnings : undefined,
           items: results,
+          truncation: output.truncation,
         },
       };
     },
@@ -287,7 +293,8 @@ export default function piInternet(pi: ExtensionAPI) {
     description:
       "Fetch a URL and return clean, readable markdown content. " +
       "Handles GitHub repos/files/PRs/issues/releases/Actions/gists, Reddit threads, Twitter/X profiles, " +
-      "YouTube videos/playlists/channels, PDFs, and regular web pages.",
+      "YouTube videos/playlists/channels, PDFs, and regular web pages. " +
+      "Output is truncated to 50KB or 2000 lines; complete truncated output is saved to a temporary file.",
     promptSnippet: "Fetch a URL and return clean markdown content",
     promptGuidelines: [
       "Use fetch_url to retrieve the content of a specific URL.",
@@ -315,7 +322,7 @@ export default function piInternet(pi: ExtensionAPI) {
       }
 
       onUpdate?.({
-        content: [{ type: "text", text: `Fetching ${params.url}...` }],
+        content: [{ type: "text", text: "Fetching URL..." }],
         details: { status: "fetching" },
       });
 
@@ -330,7 +337,7 @@ export default function piInternet(pi: ExtensionAPI) {
       });
 
       if (result.error && !result.content) {
-        throw new Error(result.error);
+        return throwTruncatedToolError(result.error);
       }
 
       let text = "";
@@ -338,9 +345,14 @@ export default function piInternet(pi: ExtensionAPI) {
       text += result.content;
       if (result.error) text += `\n\n> ⚠️ ${result.error}`;
 
+      const output = await truncateToolText(text, {
+        continuation: "Use the read tool on the full-output file to inspect omitted content.",
+        fullOutput: { prefix: "pi-internet-fetch-", filename: "output.md" },
+      });
+
       return {
         content: [
-          { type: "text" as const, text },
+          { type: "text" as const, text: output.text },
           ...(result.images ?? []).map((image) => ({
             type: "image" as const,
             data: image.data,
@@ -350,7 +362,8 @@ export default function piInternet(pi: ExtensionAPI) {
         details: {
           url: result.url,
           title: result.title,
-          truncated: result.truncated,
+          truncated: output.truncation?.truncated ?? false,
+          fullOutputPath: output.fullOutputPath,
           error: result.error,
           imageCount: result.images?.length ?? 0,
         },
@@ -365,14 +378,20 @@ export default function piInternet(pi: ExtensionAPI) {
     },
 
     renderResult(result, { expanded }, theme) {
-      const details = result.details as { url?: string; title?: string; error?: string };
+      const details = result.details as {
+        url?: string;
+        title?: string;
+        error?: string;
+        truncated?: boolean;
+      };
       if (details?.error || result.isError) {
         return new Text(theme.fg("error", `✗ ${details?.error ?? "Fetch failed"}`), 0, 0);
       }
       let text = theme.fg("success", "✓ ");
       if (details?.title) text += theme.fg("toolTitle", details.title) + " ";
+      if (details?.truncated) text += theme.fg("warning", "(truncated)");
       if (!expanded) {
-        text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;  
+        text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;
         return new Text(text, 0, 0);
       }
       const content = result.content.find((c) => c.type === "text");
@@ -456,7 +475,8 @@ export default function piInternet(pi: ExtensionAPI) {
     description:
       "Research a topic using a scout subagent with an isolated context window. " +
       "The scout searches the web and fetches pages, returning only relevant findings. " +
-      "Noise stays in the scout's disposable context and never enters your main session.",
+      "Noise stays in the scout's disposable context and never enters your main session. " +
+      "Reports are truncated to 50KB or 2000 lines; complete truncated reports are saved to a temporary file.",
     promptSnippet: "Research a topic with a scout subagent that keeps noise out of your context",
     promptGuidelines: [
       "Use web_research for complex multi-source investigations where you need to search and read multiple pages without polluting your main context.",
@@ -486,7 +506,7 @@ export default function piInternet(pi: ExtensionAPI) {
       const hasQuery = Boolean(params.query);
 
       if (!hasUrls && !hasQuery) {
-        throw new Error("Provide at least `urls` or `query` (or both).");
+        return throwTruncatedToolError("Provide at least `urls` or `query` (or both).");
       }
 
       // Check if search is available for the scout
@@ -494,7 +514,7 @@ export default function piInternet(pi: ExtensionAPI) {
         (p) => p.available && p.role !== "unused",
       );
       if (hasQuery && !hasSearch) {
-        throw new Error(
+        return throwTruncatedToolError(
           `No search provider available for query "${params.query}". Provide explicit URLs or configure a search provider.`,
         );
       }
@@ -502,17 +522,15 @@ export default function piInternet(pi: ExtensionAPI) {
       const systemPrompt = buildScoutPrompt(params.task, hasSearch, params.urls, params.query);
 
       onUpdate?.({
-        content: [{
-          type: "text",
-          text: `Researching ${hasQuery ? `"${params.query}"` : ""}${hasUrls ? ` + ${params.urls!.length} URL(s)` : ""} with ${model}...`,
-        }],
-        details: { status: "running", model },
+        content: [{ type: "text", text: "Starting research scout..." }],
+        details: { status: "running" },
       });
 
       let taskText = `Research task: ${params.task}`;
       if (hasUrls) taskText += `\n\nURLs to read:\n${params.urls!.map((u, i) => `  ${i + 1}. ${u}`).join("\n")}`;
       if (hasQuery) taskText += `\n\nSearch query: ${params.query}`;
 
+      let completedTurns = 0;
       const result = await runScout(
         taskText,
         systemPrompt,
@@ -520,16 +538,17 @@ export default function piInternet(pi: ExtensionAPI) {
         extensionDir,
         ctx.cwd,
         signal ?? undefined,
-        (text) => {
+        () => {
+          completedTurns++;
           onUpdate?.({
-            content: [{ type: "text", text }],
-            details: { status: "running", model },
+            content: [{ type: "text", text: `Scout completed research turn ${completedTurns}; synthesizing findings...` }],
+            details: { status: "running" },
           });
         },
-      );
+      ).catch(throwTruncatedToolError);
 
       if (result.exitCode !== 0) {
-        throw new Error(result.error || result.output || "Research failed");
+        return throwTruncatedToolError(result.error || result.output || "Research failed");
       }
 
       const usageLine = [
@@ -539,13 +558,20 @@ export default function piInternet(pi: ExtensionAPI) {
         result.usage.model ?? model,
       ].join(" | ");
 
+      const output = await truncateToolText(result.output || "(no output)", {
+        continuation: "Use the read tool on the full-report file to inspect omitted findings.",
+        fullOutput: { prefix: "pi-internet-research-", filename: "report.md" },
+      });
+
       return {
-        content: [{ type: "text", text: result.output || "(no output)" }],
+        content: [{ type: "text", text: output.text }],
         details: {
           model: result.usage.model ?? model,
           status: "done",
           usage: result.usage,
           usageSummary: usageLine,
+          truncation: output.truncation,
+          fullOutputPath: output.fullOutputPath,
         },
       };
     },
@@ -572,9 +598,10 @@ export default function piInternet(pi: ExtensionAPI) {
         const errText = result.content.find((c) => c.type === "text");
         return new Text(theme.fg("error", `✗ ${errText?.type === "text" ? errText.text : "Research failed"}`), 0, 0);
       }
-      const details = result.details as { usageSummary?: string } | undefined;
+      const details = result.details as { usageSummary?: string; truncation?: { truncated: boolean } } | undefined;
       let text = theme.fg("success", "✓ Research complete");
       if (details?.usageSummary) text += theme.fg("muted", ` (${details.usageSummary})`);
+      if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
       if (expanded) {
         const content = result.content.find((c) => c.type === "text");
         if (content?.type === "text") text += "\n\n" + theme.fg("toolOutput", content.text);

@@ -13,7 +13,7 @@
  */
 
 import type { PiInternetConfig } from "../config.js";
-import { httpFetch, applyTruncation, type FetchResult, type HttpFetchOptions } from "./http.js";
+import { httpFetch, type FetchResult, type HttpFetchOptions } from "./http.js";
 
 // Lazy imports for specialized handlers (loaded on first use)
 let githubModule: typeof import("./github.js") | null = null;
@@ -164,7 +164,6 @@ export interface FetchUrlResult {
   title: string;
   content: string;
   error: string | null;
-  truncated: boolean;
   images?: Array<{ data: string; mimeType: string }>;
 }
 
@@ -174,7 +173,7 @@ export async function fetchUrl(
   options: FetchUrlOptions = {},
 ): Promise<FetchUrlResult> {
   if (options.signal?.aborted) {
-    return { url, title: "", content: "", error: "Cancelled", truncated: false };
+    return { url, title: "", content: "", error: "Cancelled" };
   }
 
   let result: FetchResult;
@@ -187,7 +186,7 @@ export async function fetchUrl(
         await throttle(redditProxyHost, config.reddit.rateLimitMs, options.signal);
         if (!redditModule) redditModule = await import("./reddit.js");
         result = await redditModule.fetchReddit(url, config, options);
-        return finalize(result);
+        return result;
       }
 
       result = await httpFetch(url, {
@@ -197,7 +196,7 @@ export async function fetchUrl(
         socksProxy: config.fetch.socksProxy,
         signal: options.signal,
       });
-      return finalize(addDirectRedditGuidance(result));
+      return addDirectRedditGuidance(result);
     }
 
     // 2. Twitter/X
@@ -207,7 +206,7 @@ export async function fetchUrl(
         await throttle(twitterProxyHost, config.twitter.rateLimitMs, options.signal);
         if (!twitterModule) twitterModule = await import("./twitter.js");
         result = await twitterModule.fetchTwitter(url, config, options);
-        return finalize(result);
+        return result;
       } catch (err) {
         if (options.signal?.aborted) throw err;
         disableProxy(twitterProxyHost);
@@ -222,7 +221,7 @@ export async function fetchUrl(
         verbose: options.verbose,
         includeLinks: options.includeLinks,
       });
-      if (ghResult) return finalize(ghResult);
+      if (ghResult) return ghResult;
       // null means "not a supported GitHub URL" — fall through to HTTP
     }
 
@@ -235,14 +234,14 @@ export async function fetchUrl(
         cleanYouTubeDescription: options.cleanYouTubeDescription,
         signal: options.signal,
       });
-      return finalize(result);
+      return result;
     }
 
     // 5. PDF (by URL extension — content-type check happens in httpFetch)
     if (isPdfUrl(url)) {
       if (!pdfModule) pdfModule = await import("./pdf.js");
       result = await pdfModule.fetchPdf(url, options.signal, config.fetch.socksProxy);
-      return finalize(result);
+      return result;
     }
 
     // 6. Regular HTTP with fallback chain
@@ -253,11 +252,11 @@ export async function fetchUrl(
       socksProxy: config.fetch.socksProxy,
       signal: options.signal,
     });
-    return finalize(result);
+    return result;
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { url, title: "", content: "", error: msg, truncated: false };
+    return { url, title: "", content: "", error: msg };
   }
 }
 
@@ -307,19 +306,4 @@ function isRedditVerificationContent(result: FetchResult): boolean {
     haystack.includes("please wait for verification") ||
     haystack.includes("js_challenge")
   );
-}
-
-function finalize(result: FetchResult): FetchUrlResult {
-  if (result.error && !result.content) {
-    return { ...result, truncated: false };
-  }
-  const truncated = applyTruncation(result.content);
-  return {
-    url: result.url,
-    title: result.title,
-    content: truncated.text,
-    error: result.error,
-    truncated: truncated.truncated,
-    images: result.images,
-  };
 }

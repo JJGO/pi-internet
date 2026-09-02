@@ -54,7 +54,7 @@ Fetch any URL and get clean, token-efficient markdown. Auto-detects content type
 
 ### `web_research` (hidden by default)
 
-Spawns a lightweight scout subagent that searches + fetches pages, then returns only relevant findings. All noise stays in the scout's disposable context.
+Spawns a lightweight scout subagent that searches + fetches pages, then returns only relevant findings. All noise stays in the scout's disposable context. Reports over 50KB or 2000 lines are truncated in the main context and saved in full to a temporary file.
 
 The `/toggle-research` switch is session-only by design.
 
@@ -188,7 +188,8 @@ web_research(task)
 - Images always stripped
 - Reddit comments capped in non-verbose mode with truncation notices; use `verbose: true` for all parsed comments and deeper replies
 - Tweet content truncated to 500 chars in non-verbose mode
-- Output truncated to Pi's standard limits (50KB / 2000 lines)
+- All tool text is truncated to Pi's standard limits (50KB / 2000 lines)
+- Full truncated fetch and research output is saved to a temporary file; search output asks for a narrower query
 - Twitter/X proxy auto-disables on failure (falls through to HTTP for session); configured Reddit proxy failures are surfaced directly
 
 ## License

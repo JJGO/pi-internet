@@ -8,6 +8,7 @@ import type { PiInternetConfig } from "../src/config.ts";
 import { fetchGitHub, clearCloneCache, parseGitHubUrl } from "../src/fetch/github.ts";
 import { fetchUrl } from "../src/fetch/router.ts";
 import { fetchGitHubResource, parseGitHubResourceUrl, __test__ as githubApiTest } from "../src/fetch/github-api.ts";
+import { truncateToolText } from "../src/util/truncation.ts";
 
 function makeConfig(clonePath: string): PiInternetConfig {
   return {
@@ -369,7 +370,7 @@ test("fetchGitHub: cached commit URLs verify HEAD before returning content", asy
   }
 });
 
-test("fetchUrl: bare repo keeps README in truncated output", async () => {
+test("fetchUrl: bare repo keeps README in truncated tool output", async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-"));
   const originalFetch = globalThis.fetch;
 
@@ -398,9 +399,12 @@ test("fetchUrl: bare repo keeps README in truncated output", async () => {
     const result = await fetchUrl("https://github.com/user/repo", makeConfig(tempRoot));
 
     assert.equal(result.error, null);
-    assert.equal(result.truncated, true);
-    assert.ok(result.content.includes("## README.md"));
-    assert.ok(result.content.includes("# Repo README"));
+    const output = await truncateToolText(result.content, {
+      continuation: "Refine the request to inspect omitted content.",
+    });
+    assert.equal(output.truncation?.truncated, true);
+    assert.ok(output.text.includes("## README.md"));
+    assert.ok(output.text.includes("# Repo README"));
   } finally {
     clearCloneCache();
     globalThis.fetch = originalFetch;
@@ -502,7 +506,6 @@ test("fetchUrl: GitHub PR uses native GitHub route instead of generic HTML", asy
     const result = await fetchUrl("https://github.com/HomebrewML/HeavyBall/pull/88", makeConfig(tempRoot));
 
     assert.equal(result.error, null);
-    assert.equal(result.truncated, false);
     assert.ok(result.content.includes("PR #88"));
     assert.ok(result.content.includes("PR body from gh JSON"));
     assert.ok(result.content.includes("Thanks for the detailed analysis."));

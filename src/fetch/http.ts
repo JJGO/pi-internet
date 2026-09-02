@@ -17,12 +17,6 @@ import { extractWithJinaReader } from "./jina.js";
 import { extractPdfFromBuffer } from "./pdf.js";
 import { combinedSignal } from "../util/signal.js";
 import { fetchWithProxy } from "../util/proxy.js";
-import {
-  truncateHead,
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  formatSize,
-} from "@earendil-works/pi-coding-agent";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -233,19 +227,4 @@ function extractWithReadability(
 
   const markdown = htmlToMarkdown(article.content, mdOptions);
   return { title: article.title || "", content: markdown };
-}
-
-/** Apply Pi's standard truncation. Returns text + whether it was truncated. */
-export function applyTruncation(text: string): { text: string; truncated: boolean } {
-  const truncation = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
-
-  if (!truncation.truncated) {
-    return { text: truncation.content, truncated: false };
-  }
-
-  const notice = `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)})]`;
-  return { text: truncation.content + notice, truncated: true };
 }
