@@ -118,9 +118,8 @@ export default function piInternet(pi: ExtensionAPI) {
     currentProvider = event.model.provider;
   });
 
-  // Reset session-scoped state on session change.
   // /toggle-research is intentionally session-only.
-  pi.on("session_start", async () => {
+  async function resetSessionState() {
     resetProxyState();
     resetSearchProviderState();
     await resetSocksProxyDispatchers();
@@ -129,20 +128,16 @@ export default function piInternet(pi: ExtensionAPI) {
     if (active.includes("web_research")) {
       pi.setActiveTools(active.filter((name) => name !== "web_research"));
     }
-  });
+  }
+
+  // Reset session-scoped state on session change.
+  pi.on("session_start", () => resetSessionState());
 
   // Clean up on session shutdown
   pi.on("session_shutdown", async () => {
-    resetProxyState();
-    resetSearchProviderState();
-    await resetSocksProxyDispatchers();
+    await resetSessionState();
     clearCloneCache();
-    researchEnabled = false;
     currentProvider = undefined;
-    const active = pi.getActiveTools();
-    if (active.includes("web_research")) {
-      pi.setActiveTools(active.filter((name) => name !== "web_research"));
-    }
   });
 
   // ── Tool 1: web_search ───────────────────────────────────────

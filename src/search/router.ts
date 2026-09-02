@@ -45,20 +45,14 @@ export interface SearchProviderStatus {
   disabledReason?: string;
 }
 
-const DEFAULT_CONFIG: SearchRouterConfig = {
-  searchProviders: ["brave", "kagi"],
-  fallbackProviders: ["tavily"],
-  socksProxy: null,
-};
-
 export function createSearchRouter(
-  config: Partial<SearchRouterConfig> = {},
+  config: SearchRouterConfig,
   providers: Record<string, SearchProvider> = ALL_PROVIDERS,
 ) {
   const resolved: SearchRouterConfig = {
-    searchProviders: config.searchProviders ?? DEFAULT_CONFIG.searchProviders,
-    fallbackProviders: config.fallbackProviders ?? DEFAULT_CONFIG.fallbackProviders,
-    socksProxy: config.socksProxy ?? DEFAULT_CONFIG.socksProxy,
+    searchProviders: config.searchProviders,
+    fallbackProviders: config.fallbackProviders,
+    socksProxy: config.socksProxy ?? null,
   };
 
   return {
