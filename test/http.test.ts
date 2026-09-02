@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rewriteGithubBlobToRaw, isLikelyJSRendered } from "../src/fetch/http.ts";
+import { httpFetch, rewriteGithubBlobToRaw, isLikelyJSRendered } from "../src/fetch/http.ts";
 
 // ── rewriteGithubBlobToRaw ──────────────────────────────
 
@@ -58,4 +58,24 @@ test("isLikelyJSRendered: returns false for content-rich pages", () => {
 
 test("isLikelyJSRendered: returns false for no body", () => {
   assert.equal(isLikelyJSRendered("<html><head></head></html>"), false);
+});
+
+test("httpFetch cancels unsupported response bodies", async () => {
+  const originalFetch = globalThis.fetch;
+  let cancelled = false;
+  try {
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      pull() {},
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "video/mp4" } });
+
+    const result = await httpFetch("https://example.test/video", {
+      allowPrivateNetworks: true,
+      socksProxy: null,
+    });
+    assert.match(result.error ?? "", /Unsupported content type/);
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

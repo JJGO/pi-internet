@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { fetchWithProxy } from "./proxy.js";
+import { fetchWithProxy, type PinnedConnection } from "./proxy.js";
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const DEFAULT_MAX_REDIRECTS = 10;
@@ -25,7 +25,6 @@ for (const [network, prefix] of [
 ] as const) {
   blockedAddresses.addSubnet(network, prefix, "ipv4");
 }
-// IPv4-mapped IPv6 literals are rejected explicitly below.
 for (const [network, prefix] of [
   ["::", 128],
   ["::1", 128],
@@ -49,7 +48,16 @@ export interface SafeFetchOptions extends UserUrlPolicy {
   maxRedirects?: number;
 }
 
+interface ValidatedUserUrl {
+  url: URL;
+  connection?: PinnedConnection;
+}
+
 export async function validateUserUrl(rawUrl: string | URL, policy: UserUrlPolicy = {}): Promise<URL> {
+  return (await validateUserUrlForFetch(rawUrl, policy)).url;
+}
+
+async function validateUserUrlForFetch(rawUrl: string | URL, policy: UserUrlPolicy): Promise<ValidatedUserUrl> {
   let url: URL;
   try {
     url = rawUrl instanceof URL ? new URL(rawUrl) : new URL(rawUrl);
@@ -61,7 +69,7 @@ export async function validateUserUrl(rawUrl: string | URL, policy: UserUrlPolic
     throw new Error(`Unsupported URL scheme: ${url.protocol || "missing"}`);
   }
   if (url.username || url.password) throw new Error("URLs with embedded credentials are not allowed");
-  if (policy.allowPrivateNetworks) return url;
+  if (policy.allowPrivateNetworks) return { url };
 
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (hostname === "localhost" || LOCAL_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) {
@@ -70,8 +78,8 @@ export async function validateUserUrl(rawUrl: string | URL, policy: UserUrlPolic
 
   const family = isIP(hostname);
   if (family !== 0) {
-    assertPublicAddress(hostname, family, hostname);
-    return url;
+    assertPublicAddress(hostname, hostname);
+    return { url, connection: { hostname, address: hostname, family } };
   }
 
   let addresses: Array<{ address: string; family: number }>;
@@ -82,8 +90,18 @@ export async function validateUserUrl(rawUrl: string | URL, policy: UserUrlPolic
     throw new Error(`Failed to resolve ${hostname}: ${message}`);
   }
   if (addresses.length === 0) throw new Error(`Failed to resolve ${hostname}: no addresses returned`);
-  for (const result of addresses) assertPublicAddress(result.address, result.family, hostname);
-  return url;
+  for (const result of addresses) assertPublicAddress(result.address, hostname);
+
+  const selected = addresses[0];
+  const selectedFamily = isIP(selected.address);
+  return {
+    url,
+    connection: {
+      hostname,
+      address: selected.address,
+      family: selectedFamily as 4 | 6,
+    },
+  };
 }
 
 export async function safeFetch(
@@ -92,12 +110,13 @@ export async function safeFetch(
   options: SafeFetchOptions = {},
 ): Promise<Response> {
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  let current = await validateUserUrl(rawUrl, options);
+  let current = await validateUserUrlForFetch(rawUrl, options);
   let requestInit = { ...init };
 
   for (let redirects = 0; redirects <= maxRedirects; redirects++) {
-    const response = await fetchWithProxy(current, { ...requestInit, redirect: "manual" }, {
+    const response = await fetchWithProxy(current.url, { ...requestInit, redirect: "manual" }, {
       socksProxy: options.socksProxy,
+      connection: current.connection,
     });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
@@ -105,22 +124,22 @@ export async function safeFetch(
     if (!location) return response;
     if (redirects === maxRedirects) {
       await response.body?.cancel();
-      throw new Error(`Too many redirects fetching ${current.toString()}`);
+      throw new Error(`Too many redirects fetching ${current.url.toString()}`);
     }
 
-    let next: URL;
+    let next: ValidatedUserUrl;
     try {
-      next = await validateUserUrl(new URL(location, current), options);
+      next = await validateUserUrlForFetch(new URL(location, current.url), options);
     } catch (error) {
       await response.body?.cancel();
       throw error;
     }
-    requestInit = redirectRequestInit(current, next, response.status, requestInit);
+    requestInit = redirectRequestInit(current.url, next.url, response.status, requestInit);
     await response.body?.cancel();
     current = next;
   }
 
-  throw new Error(`Too many redirects fetching ${current.toString()}`);
+  throw new Error(`Too many redirects fetching ${current.url.toString()}`);
 }
 
 function redirectRequestInit(from: URL, to: URL, status: number, init: RequestInit): RequestInit {
@@ -148,13 +167,31 @@ async function defaultLookup(hostname: string): Promise<Array<{ address: string;
   return dnsLookup(hostname, { all: true, verbatim: true });
 }
 
-function assertPublicAddress(address: string, _family: number, hostname: string): void {
+function assertPublicAddress(address: string, hostname: string): void {
   const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
-  const detectedFamily = isIP(normalized);
-  if (detectedFamily === 0) throw new Error(`Resolved non-IP address for ${hostname}: ${address}`);
-  const type = detectedFamily === 6 ? "ipv6" : "ipv4";
-  const mappedIpv4 = type === "ipv6" && normalized.startsWith("::ffff:");
-  if (mappedIpv4 || blockedAddresses.check(normalized, type)) {
+  const family = isIP(normalized);
+  if (family === 0) throw new Error(`Resolved non-IP address for ${hostname}: ${address}`);
+
+  const mappedIpv4 = family === 6 ? decodeMappedIpv4(normalized) : null;
+  if (mappedIpv4) {
+    if (blockedAddresses.check(mappedIpv4, "ipv4")) {
+      throw new Error(`Blocked private or reserved address for ${hostname}: ${normalized}`);
+    }
+    return;
+  }
+
+  if (blockedAddresses.check(normalized, family === 6 ? "ipv6" : "ipv4")) {
     throw new Error(`Blocked private or reserved address for ${hostname}: ${normalized}`);
   }
+}
+
+function decodeMappedIpv4(address: string): string | null {
+  if (!address.startsWith("::ffff:")) return null;
+  const suffix = address.slice("::ffff:".length);
+  if (isIP(suffix) === 4) return suffix;
+  const groups = suffix.split(":");
+  if (groups.length !== 2 || groups.some((group) => !/^[\da-f]{1,4}$/i.test(group))) return null;
+  const high = Number.parseInt(groups[0], 16);
+  const low = Number.parseInt(groups[1], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }

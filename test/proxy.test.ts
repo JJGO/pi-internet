@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 import { fetchWithProxy, resetSocksProxyDispatchers, __test__ } from "../src/util/proxy.ts";
 
@@ -71,6 +72,26 @@ test("fetchWithProxy: leaves dispatcher unset when proxy is disabled", async () 
     globalThis.fetch = originalFetch;
     await resetSocksProxyDispatchers();
   }
+});
+
+test("fetchWithProxy: connects to the pinned address without re-resolving the hostname", async (t) => {
+  const server = createServer((_request, response) => response.end("pinned"));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await resetSocksProxyDispatchers();
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected TCP server address");
+  const response = await fetchWithProxy(`http://does-not-resolve.invalid:${address.port}/`, {}, {
+    socksProxy: null,
+    connection: { hostname: "does-not-resolve.invalid", address: "127.0.0.1", family: 4 },
+  });
+  assert.equal(await response.text(), "pinned");
 });
 
 test("fetchWithProxy: attaches an undici dispatcher when proxy is enabled", async () => {

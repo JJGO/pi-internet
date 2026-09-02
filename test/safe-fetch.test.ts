@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resetSocksProxyDispatchers } from "../src/util/proxy.ts";
 import { safeFetch, validateUserUrl, type UrlLookup } from "../src/util/safe-fetch.ts";
 
 const publicLookup: UrlLookup = async () => [{ address: "93.184.216.34", family: 4 }];
@@ -8,6 +9,7 @@ test("validateUserUrl blocks local names, private literals, and private DNS answ
   await assert.rejects(validateUserUrl("http://localhost/"), /Blocked local hostname/);
   await assert.rejects(validateUserUrl("http://127.1/"), /Blocked private or reserved address/);
   await assert.rejects(validateUserUrl("http://[::1]/"), /Blocked private or reserved address/);
+  await assert.rejects(validateUserUrl("http://[::ffff:127.0.0.1]/"), /Blocked private or reserved address/);
   await assert.rejects(validateUserUrl("file:///etc/passwd"), /Unsupported URL scheme/);
   await assert.rejects(validateUserUrl("https://user:secret@example.com/", { lookup: publicLookup }), /embedded credentials/);
   await assert.rejects(validateUserUrl("https://example.test/", {
@@ -15,9 +17,12 @@ test("validateUserUrl blocks local names, private literals, and private DNS answ
   }), /Blocked private or reserved address/);
 });
 
-test("validateUserUrl allows local development only through the explicit opt-in", async () => {
-  const url = await validateUserUrl("http://127.0.0.1:3000/", { allowPrivateNetworks: true });
-  assert.equal(url.href, "http://127.0.0.1:3000/");
+test("validateUserUrl allows public mapped addresses and explicit local development", async () => {
+  const publicMapped = await validateUserUrl("http://[::ffff:93.184.216.34]/");
+  assert.equal(publicMapped.hostname, "[::ffff:5db8:d822]");
+
+  const local = await validateUserUrl("http://127.0.0.1:3000/", { allowPrivateNetworks: true });
+  assert.equal(local.href, "http://127.0.0.1:3000/");
 });
 
 test("safeFetch validates redirect targets before requesting them", async () => {
@@ -39,7 +44,27 @@ test("safeFetch validates redirect targets before requesting them", async () => 
   }
 });
 
-test("safeFetch follows public redirects manually and strips cross-origin credentials", async () => {
+test("safeFetch supplies a pinned dispatcher for SOCKS requests", async () => {
+  const originalFetch = globalThis.fetch;
+  let dispatcher: unknown;
+  try {
+    globalThis.fetch = async (_input, init) => {
+      dispatcher = (init as RequestInit & { dispatcher?: unknown })?.dispatcher;
+      return new Response("ok");
+    };
+    const response = await safeFetch("https://example.test/", {}, {
+      socksProxy: "socks5h://127.0.0.1:1080",
+      lookup: publicLookup,
+    });
+    assert.equal(await response.text(), "ok");
+    assert.ok(dispatcher);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await resetSocksProxyDispatchers();
+  }
+});
+
+test("safeFetch pins validated addresses and strips cross-origin credentials", async () => {
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   try {
@@ -59,6 +84,8 @@ test("safeFetch follows public redirects manually and strips cross-origin creden
 
     assert.equal(await response.text(), "ok");
     assert.equal(requests.length, 2);
+    assert.ok((requests[0].init as RequestInit & { dispatcher?: unknown })?.dispatcher);
+    assert.ok((requests[1].init as RequestInit & { dispatcher?: unknown })?.dispatcher);
     assert.equal(requests[1].url, "https://other.test/final");
     assert.equal(requests[1].init?.method, "GET");
     const headers = new Headers(requests[1].init?.headers);

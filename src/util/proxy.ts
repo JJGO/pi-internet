@@ -119,8 +119,12 @@ function getPinnedDispatcher(connection: PinnedConnection, socksProxy: string | 
     });
   } else {
     const connector = buildConnector({
-      lookup(_hostname, _options, callback) {
-        callback(null, connection.address, connection.family);
+      lookup(_hostname, options, callback) {
+        if (options.all) {
+          callback(null, [{ address: connection.address, family: connection.family }]);
+        } else {
+          callback(null, connection.address, connection.family);
+        }
       },
     });
     dispatcher = new Agent({ connect: connector });
