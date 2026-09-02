@@ -179,8 +179,6 @@ export default function piInternet(pi: ExtensionAPI) {
       ),
     }),
 
-    prepareArguments(args) { return args; },
-
     async execute(_toolCallId, params, signal, onUpdate, _ctx) {
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Cancelled" }], details: {} };
@@ -313,8 +311,6 @@ export default function piInternet(pi: ExtensionAPI) {
         Type.Boolean({ description: "Full content: all parsed Reddit comments/deeper replies, untruncated tweets" }),
       ),
     }),
-
-    prepareArguments(args) { return args; },
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (signal?.aborted) {
@@ -485,8 +481,6 @@ export default function piInternet(pi: ExtensionAPI) {
       "Use web_research for complex multi-source investigations where you need to search and read multiple pages without polluting your main context.",
       "Provide a specific task description so the scout knows what information to extract and what to discard.",
     ],
-
-    prepareArguments(args) { return args; },
 
     parameters: Type.Object({
       task: Type.String({
