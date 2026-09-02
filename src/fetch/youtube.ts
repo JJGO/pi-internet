@@ -22,10 +22,14 @@ import {
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { execCommand, isCommandAvailable } from "../util/exec.js";
+import { combinedSignal } from "../util/signal.js";
 import type { FetchResult } from "./http.js";
 
 const DEFAULT_COLLECTION_LIMIT = 25;
 const YT_DLP_MAX_BUFFER = 5 * 1024 * 1024;
+// Enumerating a large channel or playlist streams thousands of JSON lines,
+// so it gets more time than the single-video yt-dlp calls (30s).
+const COLLECTION_ENTRIES_TIMEOUT_MS = 120_000;
 const YOUTUBE_TABS = new Set(["videos", "shorts", "streams", "playlists"]);
 const YOUTUBE_LIST_CACHE_DIR = join(homedir(), ".cache", "pi-internet", "youtube-lists");
 const SCREENSHOT_PARAM = "pi-internet-screenshot";
@@ -589,8 +593,9 @@ function pickEntryFields(raw: unknown): YtDlpCollectionEntry {
 
 async function getCollectionEntries(
   target: Extract<YouTubeTarget, { kind: "collection" }>,
-  signal?: AbortSignal,
+  callerSignal?: AbortSignal,
 ): Promise<YtDlpCollectionEntry[]> {
+  const signal = combinedSignal(callerSignal, COLLECTION_ENTRIES_TIMEOUT_MS);
   return new Promise((resolve, reject) => {
     const child = spawn(
       "yt-dlp",
@@ -610,7 +615,7 @@ async function getCollectionEntries(
       rl.removeAllListeners();
       child.removeAllListeners();
       child.stderr.removeAllListeners();
-      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener("abort", onAbort);
     };
 
     const finish = () => {
@@ -660,14 +665,16 @@ async function getCollectionEntries(
 
     const onAbort = () => {
       child.kill();
-      fail(new Error("Cancelled"));
+      fail(new Error(callerSignal?.aborted
+        ? "Cancelled"
+        : `yt-dlp collection listing timed out (${COLLECTION_ENTRIES_TIMEOUT_MS}ms)`));
     };
 
-    if (signal?.aborted) {
+    if (signal.aborted) {
       onAbort();
       return;
     }
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
