@@ -207,28 +207,19 @@ async function cloneRepo(
   if (ref) {
     mkdirSync(localPath, { recursive: true, mode: 0o700 });
 
-    const initResult = await execCommand("git", ["init", localPath], undefined, GIT_TIMEOUT_MS, signal, env);
-    if (!initResult.ok) {
-      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
-      return { path: null, error: initResult.stderr.trim() || initResult.error || "git init failed" };
-    }
+    const steps: Array<{ args: string[]; cwd: string | undefined; label: string }> = [
+      { args: ["init", localPath], cwd: undefined, label: "git init failed" },
+      { args: ["remote", "add", "origin", sourceUrl], cwd: localPath, label: "git remote add failed" },
+      { args: ["fetch", "--depth", "1", "origin", ref], cwd: localPath, label: `git fetch ${ref} failed` },
+      { args: ["checkout", "--force", "FETCH_HEAD"], cwd: localPath, label: "git checkout FETCH_HEAD failed" },
+    ];
 
-    const remoteResult = await execCommand("git", ["remote", "add", "origin", sourceUrl], localPath, GIT_TIMEOUT_MS, signal, env);
-    if (!remoteResult.ok) {
-      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
-      return { path: null, error: remoteResult.stderr.trim() || remoteResult.error || "git remote add failed" };
-    }
-
-    const fetchResult = await execCommand("git", ["fetch", "--depth", "1", "origin", ref], localPath, GIT_TIMEOUT_MS, signal, env);
-    if (!fetchResult.ok) {
-      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
-      return { path: null, error: fetchResult.stderr.trim() || fetchResult.error || `git fetch ${ref} failed` };
-    }
-
-    const checkoutResult = await execCommand("git", ["checkout", "--force", "FETCH_HEAD"], localPath, GIT_TIMEOUT_MS, signal, env);
-    if (!checkoutResult.ok) {
-      try { rmSync(localPath, { recursive: true, force: true }); } catch {}
-      return { path: null, error: checkoutResult.stderr.trim() || checkoutResult.error || "git checkout FETCH_HEAD failed" };
+    for (const step of steps) {
+      const result = await execCommand("git", step.args, step.cwd, GIT_TIMEOUT_MS, signal, env);
+      if (!result.ok) {
+        try { rmSync(localPath, { recursive: true, force: true }); } catch {}
+        return { path: null, error: result.stderr.trim() || result.error || step.label };
+      }
     }
 
     return { path: localPath };
