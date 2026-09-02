@@ -20,11 +20,20 @@ import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions
 // Lazy imports for specialized handlers (loaded on first use).
 // Cache the promise, not the module: concurrent import() of the same module
 // can resolve mid-evaluation under Pi's extension loader (TDZ errors).
-let arxivModule: Promise<typeof import("./arxiv.js")> | null = null;
-let githubModule: Promise<typeof import("./github.js")> | null = null;
-let youtubeModule: Promise<typeof import("./youtube.js")> | null = null;
-let redditModule: Promise<typeof import("./reddit.js")> | null = null;
-let twitterModule: Promise<typeof import("./twitter.js")> | null = null;
+// A rejected import is evicted so a transient loader failure stays retryable.
+function lazyImport<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | null = null;
+  return () => (cached ??= load().catch((error: unknown) => {
+    cached = null;
+    throw error;
+  }));
+}
+
+const loadArxiv = lazyImport(() => import("./arxiv.js"));
+const loadGithub = lazyImport(() => import("./github.js"));
+const loadYoutube = lazyImport(() => import("./youtube.js"));
+const loadReddit = lazyImport(() => import("./reddit.js"));
+const loadTwitter = lazyImport(() => import("./twitter.js"));
 
 // ── URL classifiers ────────────────────────────────────────────
 
@@ -158,8 +167,7 @@ export async function fetchUrl(
 
   try {
     // 1. arXiv
-    arxivModule ??= import("./arxiv.js");
-    const arxivResult = await (await arxivModule).fetchArxiv(url, config, options);
+    const arxivResult = await (await loadArxiv()).fetchArxiv(url, config, options);
     if (arxivResult) return arxivResult;
 
     // 2. Reddit
@@ -167,8 +175,7 @@ export async function fetchUrl(
     if (isRedditUrl(url, redditProxyHost)) {
       if (redditProxyHost) {
         await throttle(redditProxyHost, config.reddit.rateLimitMs, options.signal);
-        redditModule ??= import("./reddit.js");
-        result = await (await redditModule).fetchReddit(url, config, options);
+        result = await (await loadReddit()).fetchReddit(url, config, options);
         return result;
       }
 
@@ -190,8 +197,7 @@ export async function fetchUrl(
     if (isTwitterUrl(url) && twitterProxyHost && !isProxyDisabled(twitterProxyHost)) {
       try {
         await throttle(twitterProxyHost, config.twitter.rateLimitMs, options.signal);
-        twitterModule ??= import("./twitter.js");
-        result = await (await twitterModule).fetchTwitter(url, config, options);
+        result = await (await loadTwitter()).fetchTwitter(url, config, options);
         return result;
       } catch (err) {
         if (options.signal?.aborted) throw err;
@@ -202,8 +208,7 @@ export async function fetchUrl(
 
     // 4. GitHub
     if (isGitHubUrl(url) && config.github.enabled) {
-      githubModule ??= import("./github.js");
-      const ghResult = await (await githubModule).fetchGitHub(url, config, options.signal, {
+      const ghResult = await (await loadGithub()).fetchGitHub(url, config, options.signal, {
         verbose: options.verbose,
         includeLinks: options.includeLinks,
       });
@@ -213,8 +218,7 @@ export async function fetchUrl(
 
     // 5. YouTube
     if (isYouTubeUrl(url) && config.youtube.enabled) {
-      youtubeModule ??= import("./youtube.js");
-      result = await (await youtubeModule).fetchYouTube(url, {
+      result = await (await loadYoutube()).fetchYouTube(url, {
         verbose: options.verbose,
         allowImages: options.allowImages,
         cleanYouTubeDescription: options.cleanYouTubeDescription,

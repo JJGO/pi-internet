@@ -231,6 +231,61 @@ test("fetch_url: an oversized batch error does not hide later results", async ()
   }
 });
 
+test("fetch_url: batch where every URL fails throws a tool error listing each failure", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => new Response("nope", { status: 503 });
+    await assert.rejects(
+      tools.get("fetch_url")!.execute(
+        "fetch-all-fail",
+        { urls: ["https://example.com/a", "https://example.com/b"] },
+        undefined,
+        undefined,
+        {},
+      ),
+      (error: Error) => {
+        assert.match(error.message, /All 2 fetches failed/);
+        assert.match(error.message, /example\.com\/a.*HTTP 503/);
+        assert.match(error.message, /example\.com\/b.*HTTP 503/);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetch_url: single-item urls array behaves like the single-URL path", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => new Response("solo page content", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+
+    const result = await tools.get("fetch_url")!.execute(
+      "fetch-solo",
+      { urls: ["https://example.com/solo.txt"] },
+      undefined,
+      undefined,
+      {},
+    );
+    const text = textContent(result);
+
+    // Single-URL shape: top-level `url` detail, no batch sections/urlCount.
+    assert.equal(result.details?.url, "https://example.com/solo.txt");
+    assert.equal(result.details?.urlCount, undefined);
+    assert.match(text, /solo page content/);
+    assert.doesNotMatch(text, /^## /m);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetch_url: rejects both url and urls, and rejects neither", async () => {
   const tools = loadTools();
   await assert.rejects(

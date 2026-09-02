@@ -386,10 +386,19 @@ export default function piInternet(pi: ExtensionAPI) {
           });
         }
 
+        const failed = results.filter((result) => result.error && !result.content).length;
+        if (failed === results.length) {
+          // Match the single-URL contract: a fetch with no content is a tool error.
+          return throwTruncatedToolError(
+            `All ${results.length} fetches failed:\n\n${results
+              .map((result) => `- <${result.url}>: ${result.error}`)
+              .join("\n")}`,
+          );
+        }
+
         const output = await truncateToolText(sections.join(sectionSeparator), {
           continuation: "Use the read tool on the per-URL full-output files to inspect omitted content.",
         });
-        const failed = results.filter((result) => result.error && !result.content).length;
 
         return {
           content: [
@@ -401,7 +410,6 @@ export default function piInternet(pi: ExtensionAPI) {
             urlCount: results.length,
             failedCount: failed,
             truncated: anyTruncated || (output.truncation?.truncated ?? false),
-            error: failed === results.length ? "All fetches failed" : undefined,
             imageCount: images.length,
           },
         };
