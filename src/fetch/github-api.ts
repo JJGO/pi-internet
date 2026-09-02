@@ -6,13 +6,13 @@
  * classes on GitHub-native APIs and renders normalized Markdown for Pi.
  */
 
-import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import { fetchWithProxy } from "../util/proxy.js";
+import { execCommand, type ExecResult } from "../util/exec.js";
 import type { FetchResult } from "./http.js";
 
 const GH_TIMEOUT_MS = 60_000;
@@ -40,21 +40,12 @@ export interface GitHubResourceOptions {
   signal?: AbortSignal;
 }
 
-interface CommandResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  code: number | null;
-  timedOut: boolean;
-  error?: string;
-}
-
 type CommandRunner = (
   command: string,
   args: string[],
   timeoutMs: number,
   signal?: AbortSignal,
-) => Promise<CommandResult>;
+) => Promise<ExecResult>;
 
 let ghAvailable: boolean | null = null;
 let commandRunner: CommandRunner = runCommand;
@@ -64,40 +55,16 @@ function runCommand(
   args: string[],
   timeoutMs: number,
   signal?: AbortSignal,
-): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = execFile(
-      command,
-      args,
-      { timeout: timeoutMs, maxBuffer: 25 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
-      (err, stdout, stderr) => {
-        const out = typeof stdout === "string" ? stdout : stdout.toString();
-        const errText = typeof stderr === "string" ? stderr : stderr.toString();
-        if (err) {
-          const nodeErr = err as NodeJS.ErrnoException & { code?: number | string | null; killed?: boolean };
-          resolve({
-            ok: false,
-            stdout: out,
-            stderr: errText,
-            code: typeof nodeErr.code === "number" ? nodeErr.code : null,
-            timedOut: Boolean(nodeErr.killed) && /timed out|timeout/i.test(nodeErr.message),
-            error: nodeErr.message,
-          });
-          return;
-        }
-        resolve({ ok: true, stdout: out, stderr: errText, code: 0, timedOut: false });
-      },
-    );
-
-    if (signal) {
-      const onAbort = () => child.kill();
-      signal.addEventListener("abort", onAbort, { once: true });
-      child.on("exit", () => signal.removeEventListener("abort", onAbort));
-    }
+): Promise<ExecResult> {
+  return execCommand(command, args, {
+    timeoutMs,
+    maxBuffer: 25 * 1024 * 1024,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    signal,
   });
 }
 
-async function checkGhAvailable(signal?: AbortSignal): Promise<boolean> {
+export async function checkGhAvailable(signal?: AbortSignal): Promise<boolean> {
   if (process.env.PI_INTERNET_GITHUB_DISABLE_GH === "1") return false;
   if (ghAvailable !== null) return ghAvailable;
   const result = await commandRunner("gh", ["--version"], 5_000, signal);

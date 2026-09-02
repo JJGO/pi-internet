@@ -14,12 +14,12 @@ import {
   existsSync, readFileSync, readdirSync, statSync,
   openSync, readSync, closeSync, mkdirSync, rmSync, writeFileSync,
 } from "node:fs";
-import { execFile } from "node:child_process";
 import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
 import type { PiInternetConfig } from "../config.js";
 import { applySocksProxyEnv, fetchWithProxy } from "../util/proxy.js";
+import { execCommand as execShared, type ExecResult } from "../util/exec.js";
 import type { FetchResult } from "./http.js";
-import { fetchGitHubResource, parseGitHubResourceUrl, resetGitHubApiState } from "./github-api.js";
+import { checkGhAvailable, fetchGitHubResource, parseGitHubResourceUrl, resetGitHubApiState } from "./github-api.js";
 
 // ── URL parsing ────────────────────────────────────────────────
 
@@ -117,13 +117,6 @@ interface CloneResult {
   warning?: string;
 }
 
-interface CommandResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  error?: string;
-}
-
 function cacheKey(owner: string, repo: string, ref?: string): string {
   return ref ? `${owner}/${repo}@${ref}` : `${owner}/${repo}`;
 }
@@ -184,18 +177,6 @@ function shouldRefreshClone(metadata: CloneMetadata | null, ref: string | undefi
 
 // ── Clone execution ────────────────────────────────────────────
 
-let ghAvailable: boolean | null = null;
-
-async function checkGhAvailable(): Promise<boolean> {
-  if (ghAvailable !== null) return ghAvailable;
-  return new Promise((resolve) => {
-    execFile("gh", ["--version"], { timeout: 5000 }, (err) => {
-      ghAvailable = !err;
-      resolve(ghAvailable);
-    });
-  });
-}
-
 function execCommand(
   command: string,
   args: string[],
@@ -203,31 +184,8 @@ function execCommand(
   timeoutMs: number,
   signal?: AbortSignal,
   env?: NodeJS.ProcessEnv,
-): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = execFile(command, args, { cwd, timeout: timeoutMs, env }, (err, stdout, stderr) => {
-      if (err) {
-        resolve({
-          ok: false,
-          stdout: typeof stdout === "string" ? stdout : stdout.toString(),
-          stderr: typeof stderr === "string" ? stderr : stderr.toString(),
-          error: err.message,
-        });
-        return;
-      }
-      resolve({
-        ok: true,
-        stdout: typeof stdout === "string" ? stdout : stdout.toString(),
-        stderr: typeof stderr === "string" ? stderr : stderr.toString(),
-      });
-    });
-
-    if (signal) {
-      const onAbort = () => child.kill();
-      signal.addEventListener("abort", onAbort, { once: true });
-      child.on("exit", () => signal.removeEventListener("abort", onAbort));
-    }
-  });
+): Promise<ExecResult> {
+  return execShared(command, args, { cwd, timeoutMs, signal, env });
 }
 
 async function cloneRepo(

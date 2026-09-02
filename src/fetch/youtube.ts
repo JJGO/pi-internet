@@ -7,7 +7,7 @@
  * pi-internet-screenshot query parameter to a video URL.
  */
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import {
@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { execCommand, isCommandAvailable } from "../util/exec.js";
 import type { FetchResult } from "./http.js";
 
 const DEFAULT_COLLECTION_LIMIT = 25;
@@ -32,9 +33,6 @@ const DESCRIPTION_INPUT_LIMIT = 12_000;
 const DESCRIPTION_OUTPUT_LIMIT = 2_000;
 const SCREENSHOT_FORMAT = "image/jpeg";
 const FRAME_WIDTH = 1280;
-
-let ytDlpAvailable: boolean | null = null;
-let ffmpegAvailable: boolean | null = null;
 
 type YouTubeCollectionKind = "playlist" | "channel";
 type YouTubeTab = "videos" | "shorts" | "streams" | "playlists";
@@ -106,26 +104,6 @@ interface CollectionRenderOptions {
 interface ScreenshotDirective {
   cleanUrl: string;
   timestamp: string;
-}
-
-async function checkYtDlp(): Promise<boolean> {
-  if (ytDlpAvailable !== null) return ytDlpAvailable;
-  return new Promise((resolve) => {
-    execFile("yt-dlp", ["--version"], { timeout: 5000 }, (err) => {
-      ytDlpAvailable = !err;
-      resolve(ytDlpAvailable);
-    });
-  });
-}
-
-async function checkFfmpeg(): Promise<boolean> {
-  if (ffmpegAvailable !== null) return ffmpegAvailable;
-  return new Promise((resolve) => {
-    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err) => {
-      ffmpegAvailable = !err;
-      resolve(ffmpegAvailable);
-    });
-  });
 }
 
 function extractVideoId(url: string): string | null {
@@ -278,27 +256,16 @@ function normalizeMarkdownBlock(text: string): string {
     .trim();
 }
 
-function runCommand(command: string, args: string[], options: RunCommandOptions): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      command,
-      args,
-      { timeout: options.timeoutMs, maxBuffer: options.maxBuffer ?? YT_DLP_MAX_BUFFER },
-      (err, stdout, stderr) => {
-        if (err) {
-          reject(new Error(extractCommandError(err, stdout, stderr)));
-          return;
-        }
-        resolve({ stdout, stderr });
-      },
-    );
-
-    if (options.signal) {
-      const onAbort = () => child.kill();
-      options.signal.addEventListener("abort", onAbort, { once: true });
-      child.on("exit", () => options.signal?.removeEventListener("abort", onAbort));
-    }
+async function runCommand(command: string, args: string[], options: RunCommandOptions): Promise<{ stdout: string; stderr: string }> {
+  const result = await execCommand(command, args, {
+    timeoutMs: options.timeoutMs,
+    maxBuffer: options.maxBuffer ?? YT_DLP_MAX_BUFFER,
+    signal: options.signal,
   });
+  if (!result.ok) {
+    throw new Error(extractCommandError(new Error(result.error ?? "command failed"), result.stdout, result.stderr));
+  }
+  return { stdout: result.stdout, stderr: result.stderr };
 }
 
 function extractCommandError(err: Error, stdout: string | Buffer, stderr: string | Buffer): string {
@@ -336,34 +303,16 @@ async function extractSubtitles(videoUrl: string, signal?: AbortSignal): Promise
   const tmpDir = mkdtempSync(join(tmpdir(), "pi-yt-"));
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const args = [
-        "--write-auto-sub",
-        "--write-sub",
-        "--sub-lang", "en",
-        "--sub-format", "vtt/srt/best",
-        "--skip-download",
-        "--no-warnings",
-        "-o", join(tmpDir, "%(id)s.%(ext)s"),
-        videoUrl,
-      ];
-
-      const child = execFile(
-        "yt-dlp",
-        args,
-        { timeout: 30_000, maxBuffer: YT_DLP_MAX_BUFFER },
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        },
-      );
-
-      if (signal) {
-        const onAbort = () => child.kill();
-        signal.addEventListener("abort", onAbort, { once: true });
-        child.on("exit", () => signal.removeEventListener("abort", onAbort));
-      }
-    });
+    await runCommand("yt-dlp", [
+      "--write-auto-sub",
+      "--write-sub",
+      "--sub-lang", "en",
+      "--sub-format", "vtt/srt/best",
+      "--skip-download",
+      "--no-warnings",
+      "-o", join(tmpDir, "%(id)s.%(ext)s"),
+      videoUrl,
+    ], { timeoutMs: 30_000, signal });
 
     const files = readdirSync(tmpDir).filter((file) => file.endsWith(".vtt") || file.endsWith(".srt"));
     if (files.length === 0) return null;
@@ -893,7 +842,7 @@ async function resolveVideoStreamUrl(videoUrl: string, signal?: AbortSignal): Pr
 }
 
 async function captureFrame(videoUrl: string, timestampSeconds: number, signal?: AbortSignal): Promise<{ path: string; data: string; mimeType: string }> {
-  const hasFfmpeg = await checkFfmpeg();
+  const hasFfmpeg = await isCommandAvailable("ffmpeg");
   if (!hasFfmpeg) {
     throw new Error("ffmpeg is required for YouTube screenshots. Install with: brew install ffmpeg");
   }
@@ -994,7 +943,7 @@ export async function fetchYouTube(url: string, options: FetchYouTubeOptions = {
     };
   }
 
-  const available = await checkYtDlp();
+  const available = await isCommandAvailable("yt-dlp");
   if (!available) {
     return {
       url,
