@@ -492,6 +492,112 @@ test("parseGitHubResourceUrl: collaboration URL classes", () => {
   assert.equal(parseGitHubResourceUrl("https://github.com/user/repo/blob/main/README.md"), null);
 });
 
+test("parseGitHubResourceUrl: user, commit, compare, gist, and release variants", () => {
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/octocat"), {
+    kind: "user",
+    login: "octocat",
+    url: "https://github.com/octocat",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/commit/abc123def"), {
+    kind: "commit",
+    owner: "user",
+    repo: "repo",
+    sha: "abc123def",
+    url: "https://github.com/user/repo/commit/abc123def",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/compare/v1.0.0...v2.0.0"), {
+    kind: "compare",
+    owner: "user",
+    repo: "repo",
+    base: "v1.0.0",
+    head: "v2.0.0",
+    url: "https://github.com/user/repo/compare/v1.0.0...v2.0.0",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://gist.github.com/abcdef"), {
+    kind: "gist",
+    gistId: "abcdef",
+    url: "https://gist.github.com/abcdef",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/releases/latest"), {
+    kind: "release",
+    owner: "user",
+    repo: "repo",
+    latest: true,
+    url: "https://github.com/user/repo/releases/latest",
+  });
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/releases"), {
+    kind: "release",
+    owner: "user",
+    repo: "repo",
+    url: "https://github.com/user/repo/releases",
+  });
+  // Tags may contain slashes.
+  const slashTag = parseGitHubResourceUrl("https://github.com/user/repo/releases/tag/releases/v1.0");
+  assert.ok(slashTag?.kind === "release" && slashTag.tag === "releases/v1.0");
+});
+
+test("parseGitHubResourceUrl: rejects non-GitHub and non-HTTP URLs, keeps unsupported paths on-platform", () => {
+  assert.equal(parseGitHubResourceUrl("https://gitlab.com/user/repo/issues/1"), null);
+  assert.equal(parseGitHubResourceUrl("ftp://github.com/user/repo"), null);
+  assert.equal(parseGitHubResourceUrl("not a url"), null);
+  // Issues without a number are recognized but unsupported (no HTML fallback).
+  assert.deepEqual(parseGitHubResourceUrl("https://github.com/user/repo/issues"), {
+    kind: "unsupported",
+    owner: "user",
+    repo: "repo",
+    path: "/issues",
+    url: "https://github.com/user/repo/issues",
+  });
+});
+
+test("fetchGitHubResource: issue falls back to REST when gh is unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+
+  try {
+    githubApiTest.setCommandRunner(async () => (
+      { ok: false, stdout: "", stderr: "", code: 1, timedOut: false, error: "gh: command not found" }
+    ));
+
+    globalThis.fetch = async (input) => {
+      const url = input.toString();
+      if (url === "https://api.github.com/repos/user/repo/issues/7") {
+        return Response.json({
+          number: 7,
+          title: "REST fallback issue",
+          state: "open",
+          user: { login: "rest-author" },
+          body: "Issue body via REST",
+          labels: [{ name: "bug" }],
+          created_at: "2026-01-02T03:04:05Z",
+          updated_at: "2026-01-03T03:04:05Z",
+          html_url: "https://github.com/user/repo/issues/7",
+        });
+      }
+      if (url === "https://api.github.com/repos/user/repo/issues/7/comments?per_page=100") {
+        return Response.json([
+          { user: { login: "commenter" }, created_at: "2026-01-04T00:00:00Z", body: "REST comment body", html_url: "https://github.com/user/repo/issues/7#issuecomment-1" },
+        ]);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const route = parseGitHubResourceUrl("https://github.com/user/repo/issues/7");
+    assert.ok(route && route.kind === "issue");
+    const result = await fetchGitHubResource(route, makeConfig(tmpdir()));
+
+    assert.equal(result.error, null);
+    assert.match(result.content, /Issue #7 — REST fallback issue/);
+    assert.match(result.content, /Author: rest-author/);
+    assert.match(result.content, /Labels: bug/);
+    assert.match(result.content, /Issue body via REST/);
+    assert.match(result.content, /### commenter — 2026-01-04T00:00:00Z/);
+    assert.match(result.content, /REST comment body/);
+  } finally {
+    githubApiTest.resetCommandRunner();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchUrl: GitHub PR uses native GitHub route instead of generic HTML", async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "pi-internet-github-"));
   const originalFetch = globalThis.fetch;
