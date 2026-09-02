@@ -30,6 +30,10 @@ function makeConfig(overrides: Partial<PiInternetConfig> = {}): PiInternetConfig
       enabled: false,
       ...overrides.youtube,
     },
+    pdf: {
+      converter: "unpdf" as const,
+      ...overrides.pdf,
+    },
     fetch: {
       includeLinks: false,
       timeoutMs: 1000,

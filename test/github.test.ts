@@ -32,6 +32,9 @@ function makeConfig(clonePath: string): PiInternetConfig {
     youtube: {
       enabled: true,
     },
+    pdf: {
+      converter: "unpdf" as const,
+    },
     fetch: {
       includeLinks: false,
       timeoutMs: 30_000,

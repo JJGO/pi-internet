@@ -48,6 +48,19 @@ test("mergeWithDefaults: applies defaults and normalizes valid values", () => {
   assert.equal(config.fetch.allowPrivateNetworks, false);
   assert.equal(config.github.enabled, true);
   assert.equal(config.github.refreshTtlMs, 12345);
+  assert.equal(config.pdf.converter, "auto");
+});
+
+test("mergeWithDefaults: pdf.converter accepts known values and rejects unknown ones", () => {
+  const env = {
+    PI_INTERNET_REDLIB_PROXY: undefined,
+    PI_INTERNET_NITTER_PROXY: undefined,
+    PI_INTERNET_SOCKS_PROXY: undefined,
+  };
+  const valid = withEnv(env, () => mergeWithDefaults({ pdf: { converter: "pdftotext" } }));
+  assert.equal(valid.pdf.converter, "pdftotext");
+  const invalid = withEnv(env, () => mergeWithDefaults({ pdf: { converter: "marker" } }));
+  assert.equal(invalid.pdf.converter, "auto");
 });
 
 test("mergeWithDefaults: invalid values fall back to defaults", () => {

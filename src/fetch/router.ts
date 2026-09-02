@@ -178,6 +178,7 @@ export async function fetchUrl(
         signal: options.signal,
         allowPrivateNetworks: config.fetch.allowPrivateNetworks,
         lookup: options.lookup,
+        pdfConverter: config.pdf.converter,
       });
       return addDirectRedditGuidance(result);
     }
@@ -229,6 +230,7 @@ export async function fetchUrl(
       signal: options.signal,
       allowPrivateNetworks: config.fetch.allowPrivateNetworks,
       lookup: options.lookup,
+      pdfConverter: config.pdf.converter,
     });
     return result;
 

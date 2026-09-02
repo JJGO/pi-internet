@@ -117,6 +117,62 @@ test("PDF extraction caps work at 100 pages and discloses the complete page coun
   }
 });
 
+async function extractWithConverter(converter: "auto" | "pymupdf4llm" | "pdftotext" | "unpdf", pageTexts: string[]) {
+  const pdf = makeMultiPagePdf(pageTexts);
+  const body = pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) as ArrayBuffer;
+  return downloadAndExtractPdf(
+    new Response(body, { headers: { "content-type": "application/pdf" } }),
+    "https://example.com/converted.pdf",
+    undefined,
+    converter,
+  );
+}
+
+async function commandWorks(command: string, args: string[]): Promise<boolean> {
+  const { execCommand } = await import("../src/util/exec.ts");
+  return (await execCommand(command, args, { timeoutMs: 10_000 })).ok;
+}
+
+test("PDF extraction falls back to unpdf when external converters are unavailable", async () => {
+  const originalPath = process.env.PATH;
+  try {
+    process.env.PATH = "/nonexistent";
+    const extraction = await extractWithConverter("auto", ["fallback text"]);
+    try {
+      assert.equal(extraction.engine, "unpdf");
+      assert.match(extraction.content, /fallback text/);
+    } finally {
+      await rm(dirname(extraction.pdfPath), { recursive: true, force: true });
+    }
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("PDF extraction via pdftotext emits page markers and respects the page cap", async (t) => {
+  if (!(await commandWorks("pdftotext", ["-v"]))) return t.skip("pdftotext not installed");
+  const extraction = await extractWithConverter("pdftotext", ["alpha page", "beta page"]);
+  try {
+    assert.equal(extraction.engine, "pdftotext");
+    assert.match(extraction.content, /<!-- Page 1 -->[\s\S]*alpha page/);
+    assert.match(extraction.content, /<!-- Page 2 -->[\s\S]*beta page/);
+  } finally {
+    await rm(dirname(extraction.pdfPath), { recursive: true, force: true });
+  }
+});
+
+test("PDF extraction via pymupdf4llm emits page markers", async (t) => {
+  if (!(await commandWorks("python3", ["-c", "import pymupdf4llm"]))) return t.skip("pymupdf4llm not installed");
+  const extraction = await extractWithConverter("pymupdf4llm", ["gamma page", "delta page"]);
+  try {
+    assert.equal(extraction.engine, "pymupdf4llm");
+    assert.match(extraction.content, /<!-- Page 1 -->[\s\S]*gamma page/);
+    assert.match(extraction.content, /<!-- Page 2 -->[\s\S]*delta page/);
+  } finally {
+    await rm(dirname(extraction.pdfPath), { recursive: true, force: true });
+  }
+});
+
 test("httpFetch handles extensionless and generically labeled PDFs through one path", async () => {
   const originalFetch = globalThis.fetch;
   const created: string[] = [];

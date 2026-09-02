@@ -223,7 +223,7 @@ export async function fetchArxiv(
     if (parsedUrl.representation === "pdf") {
       const response = await requestArxiv(selectedUrl, config, signal);
       if (!response.ok) return representationHttpError(url, parsedUrl.representation, response, requestedManifest, latestManifest, includeLinks);
-      const extraction = await downloadAndExtractPdf(response, selectedUrl, signal);
+      const extraction = await downloadAndExtractPdf(response, selectedUrl, signal, config.pdf.converter);
       const disclosure = renderDisclosure("pdf", requestedManifest, latestManifest, {
         pdf: extraction.pdfPath,
         markdown: extraction.markdownPath,

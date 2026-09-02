@@ -35,6 +35,10 @@ export interface PiInternetConfig {
   youtube: {
     enabled: boolean;
   };
+  pdf: {
+    /** "auto" tries local pymupdf4llm, then pdftotext, then bundled unpdf. */
+    converter: "auto" | "pymupdf4llm" | "pdftotext" | "unpdf";
+  };
   fetch: {
     includeLinks: boolean;
     timeoutMs: number;
@@ -74,6 +78,9 @@ const DEFAULTS: PiInternetConfig = {
   },
   youtube: {
     enabled: true,
+  },
+  pdf: {
+    converter: "auto",
   },
   fetch: {
     includeLinks: true,
@@ -144,6 +151,9 @@ function mergeWithDefaults(raw: Record<string, unknown>): PiInternetConfig {
     },
     youtube: {
       enabled: asBool(get(raw, "youtube", "enabled")) ?? DEFAULTS.youtube.enabled,
+    },
+    pdf: {
+      converter: asPdfConverter(get(raw, "pdf", "converter")) ?? DEFAULTS.pdf.converter,
     },
     fetch: {
       includeLinks: asBool(get(raw, "fetch", "includeLinks")) ?? DEFAULTS.fetch.includeLinks,
@@ -217,6 +227,10 @@ function normalizeProxyHost(value: string): string {
     }
   }
   return trimmed.replace(/^\/\/+/, "").toLowerCase();
+}
+
+function asPdfConverter(val: unknown): PiInternetConfig["pdf"]["converter"] | undefined {
+  return val === "auto" || val === "pymupdf4llm" || val === "pdftotext" || val === "unpdf" ? val : undefined;
 }
 
 function asBool(val: unknown): boolean | undefined {

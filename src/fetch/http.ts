@@ -18,6 +18,7 @@ import {
   downloadAndExtractPdf,
   finalizePdfResult,
   renderGenericPdfPreamble,
+  type PdfConverter,
 } from "./pdf.js";
 import { readResponseText } from "../util/download.js";
 import { fetchWithTransientRetry } from "../util/retry-fetch.js";
@@ -57,6 +58,7 @@ export interface HttpFetchOptions {
   retryTransient?: boolean;
   allowPrivateNetworks?: boolean;
   lookup?: UrlLookup;
+  pdfConverter?: PdfConverter;
 }
 
 /**
@@ -152,7 +154,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
 
   if (pdfCandidate) {
     try {
-      const extraction = await downloadAndExtractPdf(response, url, signal);
+      const extraction = await downloadAndExtractPdf(response, url, signal, options.pdfConverter);
       return await finalizePdfResult(extraction, renderGenericPdfPreamble(extraction));
     } catch (error) {
       return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
