@@ -22,6 +22,7 @@
   },
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",
+    "audit:runtime": "npm audit --omit=dev --omit=peer",
     "compare-search-providers": "tsx scripts/compare-search-providers.ts"
   },
   "files": [
@@ -33,12 +34,13 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@mozilla/readability": "^0.5.0",
+    "@mozilla/readability": "^0.6.0",
     "defuddle": "0.19.3",
     "fetch-socks": "^1.3.3",
     "linkedom": "^0.16.0",
     "tar-stream": "^3.1.7",
     "turndown": "^7.2.0",
+    "undici": "^8.10.0",
     "unpdf": "1.4.0"
   },
   "peerDependencies": {
@@ -48,9 +50,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.74.0",
-    "@earendil-works/pi-coding-agent": "^0.74.0",
-    "@earendil-works/pi-tui": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
     "@types/tar-stream": "^3.1.4",
     "tsx": "^4.21.0",
     "typebox": "^1.1.24"
