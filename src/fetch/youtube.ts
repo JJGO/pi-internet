@@ -278,10 +278,6 @@ function extractCommandError(err: Error, stdout: string | Buffer, stderr: string
   return message.replace(/^ERROR:\s*/i, "");
 }
 
-function extractYtDlpError(err: Error, stdout: string, stderr: string): string {
-  return extractCommandError(err, stdout, stderr);
-}
-
 async function getVideoInfo(videoUrl: string, signal?: AbortSignal): Promise<YtDlpVideoInfo | null> {
   try {
     const { stdout } = await runCommand("yt-dlp", [
@@ -664,7 +660,7 @@ async function getCollectionEntries(
         finish();
         return;
       }
-      fail(new Error(extractYtDlpError(
+      fail(new Error(extractCommandError(
         new Error(`yt-dlp exited with code ${code ?? "unknown"}`),
         "",
         stderr,
