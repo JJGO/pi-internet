@@ -63,7 +63,7 @@ export default function piInternet(pi: ExtensionAPI) {
   }
 
   // Config is loaded on-demand (never cached in closure) so session switches
-  // always pick up changes. See REVIEW.md §1.1.
+  // always pick up changes.
   function getConfig() { return loadConfig(); }
 
   function getSearchRouter() {
@@ -449,7 +449,8 @@ export default function piInternet(pi: ExtensionAPI) {
       researchEnabled = !researchEnabled;
 
       if (researchEnabled) {
-        // Register lazily on first enable (avoids race — see REVIEW.md §1.3)
+        // Register lazily on first enable so the tool is never briefly visible
+        // before session_start hides it.
         if (!researchRegistered && !IS_SCOUT) {
           registerWebResearchTool();
           researchRegistered = true;
@@ -469,7 +470,6 @@ export default function piInternet(pi: ExtensionAPI) {
 
   // ── Tool 3: web_research (registered lazily via /toggle-research) ──
   // Skip in scout subagent to prevent infinite recursion.
-  // Registered on first enable to avoid the briefly-visible race (REVIEW §1.3).
 
   function registerWebResearchTool() {
     pi.registerTool({
