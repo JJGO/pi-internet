@@ -54,27 +54,13 @@ function getHostWithPort(url: string): string | null {
   }
 }
 
-function normalizeConfiguredHost(host: string | null): string | null {
-  if (!host) return null;
-  const trimmed = host.trim().replace(/\/+$/, "");
-  if (!trimmed) return null;
-  if (trimmed.includes("://")) {
-    try {
-      return new URL(trimmed).host.toLowerCase();
-    } catch {
-      return trimmed.toLowerCase();
-    }
-  }
-  return trimmed.replace(/^\/\/+/, "").toLowerCase();
-}
-
 function isRedditUrl(url: string, redditProxyHost?: string | null): boolean {
   const host = getHost(url);
   if (host !== null && REDDIT_HOSTS.has(host)) return true;
 
-  const configuredProxyHost = normalizeConfiguredHost(redditProxyHost ?? null);
-  if (!configuredProxyHost) return false;
-  return getHostWithPort(url) === configuredProxyHost;
+  // config.ts normalizes reddit.proxyHost to a lowercase host[:port] at load time.
+  if (!redditProxyHost) return false;
+  return getHostWithPort(url) === redditProxyHost;
 }
 
 function isTwitterUrl(url: string): boolean {
