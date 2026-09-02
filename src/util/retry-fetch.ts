@@ -60,7 +60,7 @@ function retryDelayMs(value: string | null): number {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : DEFAULT_RETRY_DELAY_MS;
 }
 
-function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {

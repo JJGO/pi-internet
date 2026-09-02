@@ -13,6 +13,7 @@
  */
 
 import type { PiInternetConfig } from "../config.js";
+import { abortableDelay } from "../util/retry-fetch.js";
 import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
 
 // Lazy imports for specialized handlers (loaded on first use)
@@ -114,14 +115,7 @@ async function throttle(host: string, rateLimitMs: number, signal?: AbortSignal)
   const last = lastRequestByHost.get(host) ?? 0;
   const elapsed = Date.now() - last;
   if (elapsed < rateLimitMs) {
-    const delay = rateLimitMs - elapsed;
-    await new Promise<void>((resolve, reject) => {
-      if (signal?.aborted) { reject(signal.reason); return; }
-      const timer = setTimeout(() => { cleanup(); resolve(); }, delay);
-      const onAbort = () => { clearTimeout(timer); cleanup(); reject(signal!.reason); };
-      const cleanup = () => { signal?.removeEventListener("abort", onAbort); };
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
+    await abortableDelay(rateLimitMs - elapsed, signal);
   }
   lastRequestByHost.set(host, Date.now());
 }
