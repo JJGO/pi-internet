@@ -140,6 +140,115 @@ test("fetch_url: registered tool truncates after formatting and saves full outpu
   }
 });
 
+test("fetch_url: batch urls returns one section per URL with per-URL budgets and inline errors", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const oversized = "long line of content\n".repeat(DEFAULT_MAX_LINES + 100);
+
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("missing")) return new Response("nope", { status: 404 });
+      const body = url.includes("big") ? oversized : "small page content";
+      return new Response(body, { status: 200, headers: { "content-type": "text/plain" } });
+    };
+
+    const result = await tools.get("fetch_url")!.execute(
+      "fetch-batch",
+      { urls: ["https://example.com/big.txt", "https://example.com/missing.txt", "https://example.com/small.txt"] },
+      undefined,
+      undefined,
+      {},
+    );
+    const text = textContent(result);
+    const details = result.details as {
+      urlCount?: number;
+      failedCount?: number;
+      truncated?: boolean;
+      urls?: Array<{ url: string; error?: string; fullOutputPath?: string }>;
+    };
+
+    assertWithinToolLimits(text);
+    assert.equal(details.urlCount, 3);
+    assert.equal(details.failedCount, 1);
+    assert.equal(details.truncated, true);
+    assert.match(text, /big\.txt/);
+    assert.match(text, /Fetch failed: HTTP 404/);
+    assert.match(text, /small page content/);
+    assert.match(text, /Output truncated/);
+
+    const bigSection = details.urls?.[0];
+    assert.equal(typeof bigSection?.fullOutputPath, "string");
+    try {
+      const full = await readFile(bigSection!.fullOutputPath!, "utf8");
+      assert.ok(full.includes(oversized));
+    } finally {
+      await rm(dirname(bigSection!.fullOutputPath!), { recursive: true, force: true });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetch_url: an oversized batch error does not hide later results", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const oversizedError = "failure detail ".repeat(DEFAULT_MAX_BYTES);
+  let fullOutputPath: string | undefined;
+
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("failing")) throw new Error(oversizedError);
+      return new Response("later page content", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    };
+
+    const result = await tools.get("fetch_url")!.execute(
+      "fetch-batch-error",
+      { urls: ["https://example.com/failing", "https://example.com/later.txt"] },
+      undefined,
+      undefined,
+      {},
+    );
+    const text = textContent(result);
+    const details = result.details as {
+      urls?: Array<{ error?: string; fullOutputPath?: string }>;
+    };
+    fullOutputPath = details.urls?.[0]?.fullOutputPath;
+
+    assertWithinToolLimits(text);
+    assert.match(text, /failing/);
+    assert.match(text, /Output truncated/);
+    assert.match(text, /later page content/);
+    assert.match(details.urls?.[0]?.error ?? "", /failure detail/);
+    assert.equal(typeof fullOutputPath, "string");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (fullOutputPath) await rm(dirname(fullOutputPath), { recursive: true, force: true });
+  }
+});
+
+test("fetch_url: rejects both url and urls, and rejects neither", async () => {
+  const tools = loadTools();
+  await assert.rejects(
+    tools.get("fetch_url")!.execute(
+      "fetch-both",
+      { url: "https://example.com", urls: ["https://example.com/a"] },
+      undefined,
+      undefined,
+      {},
+    ),
+    /not both/,
+  );
+  await assert.rejects(
+    tools.get("fetch_url")!.execute("fetch-none", {}, undefined, undefined, {}),
+    /Provide `url`/,
+  );
+});
+
 test("web_research: registered tool bounds updates and saves a complete oversized report", {
   skip: process.platform === "win32",
 }, async () => {

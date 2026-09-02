@@ -17,12 +17,14 @@ import { abortableDelay } from "../util/retry-fetch.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
 import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
 
-// Lazy imports for specialized handlers (loaded on first use)
-let arxivModule: typeof import("./arxiv.js") | null = null;
-let githubModule: typeof import("./github.js") | null = null;
-let youtubeModule: typeof import("./youtube.js") | null = null;
-let redditModule: typeof import("./reddit.js") | null = null;
-let twitterModule: typeof import("./twitter.js") | null = null;
+// Lazy imports for specialized handlers (loaded on first use).
+// Cache the promise, not the module: concurrent import() of the same module
+// can resolve mid-evaluation under Pi's extension loader (TDZ errors).
+let arxivModule: Promise<typeof import("./arxiv.js")> | null = null;
+let githubModule: Promise<typeof import("./github.js")> | null = null;
+let youtubeModule: Promise<typeof import("./youtube.js")> | null = null;
+let redditModule: Promise<typeof import("./reddit.js")> | null = null;
+let twitterModule: Promise<typeof import("./twitter.js")> | null = null;
 
 // ── URL classifiers ────────────────────────────────────────────
 
@@ -113,12 +115,12 @@ function disableProxy(host: string): void {
  * Respects AbortSignal for immediate cancellation during the wait.
  */
 async function throttle(host: string, rateLimitMs: number, signal?: AbortSignal): Promise<void> {
-  const last = lastRequestByHost.get(host) ?? 0;
-  const elapsed = Date.now() - last;
-  if (elapsed < rateLimitMs) {
-    await abortableDelay(rateLimitMs - elapsed, signal);
+  const now = Date.now();
+  const scheduledAt = Math.max(now, (lastRequestByHost.get(host) ?? 0) + rateLimitMs);
+  lastRequestByHost.set(host, scheduledAt);
+  if (scheduledAt > now) {
+    await abortableDelay(scheduledAt - now, signal);
   }
-  lastRequestByHost.set(host, Date.now());
 }
 
 // ── Main router ────────────────────────────────────────────────
@@ -156,8 +158,8 @@ export async function fetchUrl(
 
   try {
     // 1. arXiv
-    if (!arxivModule) arxivModule = await import("./arxiv.js");
-    const arxivResult = await arxivModule.fetchArxiv(url, config, options);
+    arxivModule ??= import("./arxiv.js");
+    const arxivResult = await (await arxivModule).fetchArxiv(url, config, options);
     if (arxivResult) return arxivResult;
 
     // 2. Reddit
@@ -165,8 +167,8 @@ export async function fetchUrl(
     if (isRedditUrl(url, redditProxyHost)) {
       if (redditProxyHost) {
         await throttle(redditProxyHost, config.reddit.rateLimitMs, options.signal);
-        if (!redditModule) redditModule = await import("./reddit.js");
-        result = await redditModule.fetchReddit(url, config, options);
+        redditModule ??= import("./reddit.js");
+        result = await (await redditModule).fetchReddit(url, config, options);
         return result;
       }
 
@@ -188,8 +190,8 @@ export async function fetchUrl(
     if (isTwitterUrl(url) && twitterProxyHost && !isProxyDisabled(twitterProxyHost)) {
       try {
         await throttle(twitterProxyHost, config.twitter.rateLimitMs, options.signal);
-        if (!twitterModule) twitterModule = await import("./twitter.js");
-        result = await twitterModule.fetchTwitter(url, config, options);
+        twitterModule ??= import("./twitter.js");
+        result = await (await twitterModule).fetchTwitter(url, config, options);
         return result;
       } catch (err) {
         if (options.signal?.aborted) throw err;
@@ -200,8 +202,8 @@ export async function fetchUrl(
 
     // 4. GitHub
     if (isGitHubUrl(url) && config.github.enabled) {
-      if (!githubModule) githubModule = await import("./github.js");
-      const ghResult = await githubModule.fetchGitHub(url, config, options.signal, {
+      githubModule ??= import("./github.js");
+      const ghResult = await (await githubModule).fetchGitHub(url, config, options.signal, {
         verbose: options.verbose,
         includeLinks: options.includeLinks,
       });
@@ -211,8 +213,8 @@ export async function fetchUrl(
 
     // 5. YouTube
     if (isYouTubeUrl(url) && config.youtube.enabled) {
-      if (!youtubeModule) youtubeModule = await import("./youtube.js");
-      result = await youtubeModule.fetchYouTube(url, {
+      youtubeModule ??= import("./youtube.js");
+      result = await (await youtubeModule).fetchYouTube(url, {
         verbose: options.verbose,
         allowImages: options.allowImages,
         cleanYouTubeDescription: options.cleanYouTubeDescription,

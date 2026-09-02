@@ -9,7 +9,7 @@
  * See the README provenance section for a brief summary of implementation sources.
  */
 
-import { type ExtensionAPI, type ExtensionContext, keyHint } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { StringEnum, type UserMessage } from "@earendil-works/pi-ai";
@@ -280,18 +280,25 @@ export default function piInternet(pi: ExtensionAPI) {
     name: "fetch_url",
     label: "Fetch URL",
     description:
-      "Fetch a URL and return clean, readable markdown content. " +
+      "Fetch one or more URLs and return clean, readable markdown content. " +
       "Handles GitHub repos/files/PRs/issues/releases/Actions/gists, Reddit threads, Twitter/X profiles, " +
       "YouTube videos/playlists/channels, PDFs, and regular web pages. " +
       "Output is truncated to 50KB or 2000 lines; complete truncated output is saved to a temporary file.",
-    promptSnippet: "Fetch a URL and return clean markdown content",
+    promptSnippet: "Fetch one or more URLs and return clean markdown content",
     promptGuidelines: [
       "Use fetch_url to retrieve the content of a specific URL.",
+      "When you need several pages (e.g. multiple search results), pass them together via `urls` in one call instead of separate calls.",
       "For Reddit and Twitter/X URLs, this tool returns structured, token-efficient content via privacy proxies.",
       "For GitHub repo/file/tree URLs, the repo is cloned locally — use read and bash on the local path. GitHub PRs/issues/releases/Actions/gists are fetched through GitHub-native APIs instead of HTML scraping.",
     ],
     parameters: Type.Object({
-      url: Type.String({ description: "URL to fetch" }),
+      url: Type.Optional(Type.String({ description: "URL to fetch" })),
+      urls: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Fetch up to 5 URLs in one call; output has one section per URL and the truncation budget is split between them",
+          maxItems: 5,
+        }),
+      ),
       selector: Type.Optional(
         Type.String({ description: "CSS selector to narrow extraction (e.g. 'main', '.docs-content')" }),
       ),
@@ -308,20 +315,99 @@ export default function piInternet(pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Cancelled" }], details: { url: params.url } };
       }
 
+      const batchUrls = params.urls?.filter((u) => u.trim().length > 0) ?? [];
+      if (params.url && batchUrls.length > 0) {
+        return throwTruncatedToolError("Provide either `url` or `urls`, not both.");
+      }
+      if (!params.url && batchUrls.length === 0) {
+        return throwTruncatedToolError("Provide `url` or a non-empty `urls` array.");
+      }
+
       onUpdate?.({
-        content: [{ type: "text", text: "Fetching URL..." }],
+        content: [{ type: "text", text: batchUrls.length > 1 ? `Fetching ${batchUrls.length} URLs...` : "Fetching URL..." }],
         details: { status: "fetching" },
       });
 
       const allowImages = ctx.model?.input.includes("image") ?? false;
-      const result = await fetchUrl(params.url, getConfig(ctx), {
+      const fetchOptions = {
         selector: params.selector,
         includeLinks: params.includeLinks,
         verbose: params.verbose,
         allowImages,
-        cleanYouTubeDescription: async (description) => cleanYouTubeDescription(description, ctx, signal ?? undefined),
+        cleanYouTubeDescription: async (description: string) => cleanYouTubeDescription(description, ctx, signal ?? undefined),
         signal: signal ?? undefined,
-      });
+      };
+      const config = getConfig(ctx);
+
+      if (batchUrls.length > 1) {
+        const results = await Promise.all(batchUrls.map((u) => fetchUrl(u, config, fetchOptions)));
+
+        // Reserve separator space before splitting the budget so every URL,
+        // including failures, retains a fair section in the final output.
+        const sectionSeparator = "\n\n---\n\n";
+        const separatorCount = results.length - 1;
+        const perUrlMaxBytes = Math.floor(
+          (DEFAULT_MAX_BYTES - Buffer.byteLength(sectionSeparator) * separatorCount) / results.length,
+        );
+        const perUrlMaxLines = Math.floor(
+          (DEFAULT_MAX_LINES - 4 * separatorCount) / results.length,
+        );
+        let anyTruncated = false;
+        const sections: string[] = [];
+        const sectionDetails: Array<Record<string, unknown>> = [];
+        const images: Array<{ data: string; mimeType: string }> = [];
+
+        for (const [index, result] of results.entries()) {
+          let text = `## ${result.title || result.url}\n\n<${result.url}>\n\n`;
+          if (result.error && !result.content) {
+            text += `> ⚠️ Fetch failed: ${result.error}`;
+          } else {
+            text += result.content;
+            if (result.error) text += `\n\n> ⚠️ ${result.error}`;
+          }
+
+          const section = await truncateToolText(text, {
+            continuation: "Use the read tool on the full-output file to inspect omitted content.",
+            maxBytes: perUrlMaxBytes,
+            maxLines: perUrlMaxLines,
+            fullOutput: result.fullOutputPath
+              ? { existingPath: result.fullOutputPath }
+              : { prefix: "pi-internet-fetch-", filename: `output-${index + 1}.md` },
+          });
+          anyTruncated ||= section.truncation?.truncated ?? false;
+          sections.push(section.text);
+          images.push(...(result.images ?? []));
+          sectionDetails.push({
+            url: result.url,
+            title: result.title,
+            error: result.error,
+            fullOutputPath: section.fullOutputPath,
+            artifacts: result.artifacts,
+          });
+        }
+
+        const output = await truncateToolText(sections.join(sectionSeparator), {
+          continuation: "Use the read tool on the per-URL full-output files to inspect omitted content.",
+        });
+        const failed = results.filter((result) => result.error && !result.content).length;
+
+        return {
+          content: [
+            { type: "text" as const, text: output.text },
+            ...images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+          ],
+          details: {
+            urls: sectionDetails,
+            urlCount: results.length,
+            failedCount: failed,
+            truncated: anyTruncated || (output.truncation?.truncated ?? false),
+            error: failed === results.length ? "All fetches failed" : undefined,
+            imageCount: images.length,
+          },
+        };
+      }
+
+      const result = await fetchUrl(params.url ?? batchUrls[0], config, fetchOptions);
 
       if (result.error && !result.content) {
         return throwTruncatedToolError(result.error);
@@ -362,7 +448,12 @@ export default function piInternet(pi: ExtensionAPI) {
 
     renderCall(args, theme) {
       let text = theme.fg("toolTitle", theme.bold("fetch_url "));
-      text += theme.fg("accent", args.url || "...");
+      if (args.urls?.length) {
+        text += theme.fg("accent", args.urls[0]);
+        if (args.urls.length > 1) text += theme.fg("muted", ` (+${args.urls.length - 1} more)`);
+      } else {
+        text += theme.fg("accent", args.url || "...");
+      }
       if (args.selector) text += theme.fg("muted", ` → ${args.selector}`);
       return new Text(text, 0, 0);
     },
@@ -373,12 +464,19 @@ export default function piInternet(pi: ExtensionAPI) {
         title?: string;
         error?: string;
         truncated?: boolean;
+        urlCount?: number;
+        failedCount?: number;
       };
       if (details?.error || result.isError) {
         return new Text(theme.fg("error", `✗ ${details?.error ?? "Fetch failed"}`), 0, 0);
       }
       let text = theme.fg("success", "✓ ");
-      if (details?.title) text += theme.fg("toolTitle", details.title) + " ";
+      if (details?.urlCount !== undefined && details.urlCount > 1) {
+        text += theme.fg("toolTitle", `${details.urlCount} URLs`) + " ";
+        if (details.failedCount) text += theme.fg("warning", `(${details.failedCount} failed) `);
+      } else if (details?.title) {
+        text += theme.fg("toolTitle", details.title) + " ";
+      }
       if (details?.truncated) text += theme.fg("warning", "(truncated)");
       if (!expanded) {
         text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;

@@ -34,7 +34,7 @@ Search for "typescript monorepo best practices 2025"
 
 ### `fetch_url`
 
-Fetch any URL and get clean, token-efficient markdown. Auto-detects content type:
+Fetch any URL and get clean, token-efficient markdown. Pass `urls: [...]` (up to 5) to fetch several pages in one call — the output has one section per URL, failures are reported inline, and the truncation budget is split between sections. Auto-detects content type:
 
 | URL Type | Handler |
 |----------|---------|

@@ -153,6 +153,27 @@ test("fetchReddit: rewrites plain Reddit URLs through the configured proxy", asy
   });
 });
 
+test("fetchReddit: concurrent requests preserve the configured proxy interval", async () => {
+  const requestTimes: number[] = [];
+  const rateLimitMs = 25;
+
+  await withMockFetch(() => {
+    requestTimes.push(Date.now());
+    return response(redditThreadHtml(1));
+  }, async () => {
+    await Promise.all(["one", "two", "three"].map((id) => fetchUrl(
+      `https://www.reddit.com/r/foo/comments/${id}/example_thread/`,
+      makeConfig({ reddit: { commentDepth: 4, proxyHost: "redlib.example", rateLimitMs } }),
+    )));
+  });
+
+  assert.equal(requestTimes.length, 3);
+  for (let index = 1; index < requestTimes.length; index++) {
+    const interval = requestTimes[index] - requestTimes[index - 1];
+    assert.ok(interval >= rateLimitMs - 5, `request interval ${interval}ms was below the configured limit`);
+  }
+});
+
 test("fetchReddit: parses direct URLs on the configured proxy host", async () => {
   const requests: string[] = [];
 

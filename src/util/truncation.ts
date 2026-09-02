@@ -15,6 +15,8 @@ type FullOutputOptions =
 interface TruncateToolTextOptions {
   continuation: string;
   fullOutput?: FullOutputOptions;
+  maxLines?: number;
+  maxBytes?: number;
 }
 
 export interface TruncatedToolText {
@@ -27,10 +29,9 @@ export async function truncateToolText(
   text: string,
   options: TruncateToolTextOptions,
 ): Promise<TruncatedToolText> {
-  const truncation = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
+  const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const truncation = truncateHead(text, { maxLines, maxBytes });
 
   if (!truncation.truncated) {
     if (options.fullOutput && "existingPath" in options.fullOutput) {
@@ -51,11 +52,12 @@ export async function truncateToolText(
   }
 
   const location = fullOutputPath ? ` Full output: ${fullOutputPath}.` : "";
-  const notice = `[Output truncated to the 50KB/2000-line limit.${location} ${options.continuation}]`;
+  const limitLabel = `${Math.round(maxBytes / 1024)}KB/${maxLines}-line`;
+  const notice = `[Output truncated to the ${limitLabel} limit.${location} ${options.continuation}]`;
   const separator = "\n\n";
-  const contentBudget = DEFAULT_MAX_BYTES - Buffer.byteLength(separator + notice, "utf8");
+  const contentBudget = maxBytes - Buffer.byteLength(separator + notice, "utf8");
   const finalTruncation = truncateHead(text, {
-    maxLines: DEFAULT_MAX_LINES - 2,
+    maxLines: maxLines - 2,
     maxBytes: contentBudget,
   });
 
