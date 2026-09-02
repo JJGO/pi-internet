@@ -329,31 +329,27 @@ export function parseSubtitles(raw: string): string {
   let currentText: string[] = [];
   const seen = new Set<string>();
 
+  const flushSegment = () => {
+    if (!currentTime || currentText.length === 0) return;
+    const text = currentText.join(" ").trim();
+    if (text && !seen.has(text)) {
+      seen.add(text);
+      segments.push({ time: currentTime, text });
+    }
+    currentText = [];
+  };
+
   for (const line of lines) {
     const trimmed = line.trim();
 
     if (trimmed === "WEBVTT" || trimmed.startsWith("Kind:") || trimmed.startsWith("Language:") || trimmed === "") {
-      if (currentTime && currentText.length > 0) {
-        const text = currentText.join(" ").trim();
-        if (text && !seen.has(text)) {
-          seen.add(text);
-          segments.push({ time: currentTime, text });
-        }
-        currentText = [];
-      }
+      flushSegment();
       continue;
     }
 
     const timeMatch = trimmed.match(/^(\d{1,2}:?\d{2}:\d{2})[.,]\d{3}\s*-->/);
     if (timeMatch) {
-      if (currentTime && currentText.length > 0) {
-        const text = currentText.join(" ").trim();
-        if (text && !seen.has(text)) {
-          seen.add(text);
-          segments.push({ time: currentTime, text });
-        }
-        currentText = [];
-      }
+      flushSegment();
       currentTime = timeMatch[1];
       continue;
     }
@@ -367,12 +363,7 @@ export function parseSubtitles(raw: string): string {
     if (clean) currentText.push(clean);
   }
 
-  if (currentTime && currentText.length > 0) {
-    const text = currentText.join(" ").trim();
-    if (text && !seen.has(text)) {
-      segments.push({ time: currentTime, text });
-    }
-  }
+  flushSegment();
 
   if (segments.length === 0) return "";
 
