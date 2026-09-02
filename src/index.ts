@@ -12,7 +12,7 @@
 import { type ExtensionAPI, type ExtensionContext, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { StringEnum, complete, type UserMessage } from "@earendil-works/pi-ai";
+import { StringEnum, type UserMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.js";
 import { createSearchRouter } from "./search/router.js";
 import { resetSearchProviderState } from "./search/state.js";
@@ -81,21 +81,16 @@ export default function piInternet(pi: ExtensionAPI) {
   ): Promise<string> {
     if (!ctx.model) throw new Error("No active model for YouTube description cleanup");
 
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-    if (!auth.ok || !auth.apiKey) {
-      throw new Error(auth.ok ? `No API key for ${ctx.model.provider}` : auth.error);
-    }
-
     const userMessage: UserMessage = {
       role: "user",
       content: [{ type: "text", text: description }],
       timestamp: Date.now(),
     };
 
-    const response = await complete(
+    const response = await ctx.modelRegistry.complete(
       ctx.model,
       { systemPrompt: DESCRIPTION_CLEANUP_PROMPT, messages: [userMessage] },
-      { apiKey: auth.apiKey, headers: auth.headers, signal },
+      { signal },
     );
 
     if (response.stopReason === "aborted" || response.stopReason === "error") {
