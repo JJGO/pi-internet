@@ -86,7 +86,8 @@ test("createSearchRouter: merges successful primaries and preserves provider err
   assert.equal(result.results.length, 3);
   assert.equal(result.results[0].title, "A1");
   assert.equal(result.results[1].title, "B1");
-  assert.equal(result.results[2].snippet, "much longer shared snippet");
+  // Duplicate URL keeps the first (higher-priority) provider's result.
+  assert.equal(result.results[2].snippet, "short");
   assert.equal(result.errors.length, 1);
   assert.equal(result.warnings.length, 0);
   assert.match(result.errors[0], /gamma/);

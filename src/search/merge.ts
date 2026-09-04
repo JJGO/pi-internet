@@ -1,10 +1,12 @@
 /**
- * Deduplicate search results by URL, keeping the richer snippet.
+ * Deduplicate search results by URL, keeping the higher-priority result.
  *
  * Provenance: Original implementation.
  * Design rationale: When running Brave + Kagi in parallel, the same URL
- * may appear in both result sets. We keep whichever has a longer snippet
- * and cap to the requested count.
+ * may appear in both result sets. Result sets arrive in configured provider
+ * priority order, so the first occurrence wins; a later duplicate replaces
+ * it only when the kept snippet is empty. Snippet length is not a quality
+ * signal.
  */
 
 import type { SearchResult } from "./types.js";
@@ -16,7 +18,7 @@ export function mergeResults(resultSets: SearchResult[][], maxResults: number): 
     for (const result of results) {
       const normalizedUrl = normalizeUrl(result.url);
       const existing = byUrl.get(normalizedUrl);
-      if (!existing || result.snippet.length > existing.snippet.length) {
+      if (!existing || (existing.snippet.length === 0 && result.snippet.length > 0)) {
         byUrl.set(normalizedUrl, result);
       }
     }

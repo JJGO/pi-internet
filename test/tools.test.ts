@@ -52,7 +52,7 @@ function assertWithinToolLimits(text: string): void {
   assert.ok(text.split("\n").length <= DEFAULT_MAX_LINES);
 }
 
-test("web_search: registered tool truncates oversized provider output", async () => {
+test("web_search: oversized provider snippets are capped per result", async () => {
   const tools = loadTools();
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.BRAVE_API_KEY;
@@ -79,8 +79,11 @@ test("web_search: registered tool truncates oversized provider output", async ()
     const text = textContent(result);
 
     assertWithinToolLimits(text);
-    assert.match(text, /Output truncated/);
-    assert.match(text, /Refine the query/);
+    // Per-result snippet capping keeps even a pathological provider response
+    // far below the overall tool truncation boundary.
+    assert.ok(Buffer.byteLength(text, "utf8") < 2_000);
+    assert.match(text, /\u2026/);
+    assert.doesNotMatch(text, /Output truncated/);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalApiKey === undefined) delete process.env.BRAVE_API_KEY;

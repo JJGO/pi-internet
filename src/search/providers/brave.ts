@@ -2,10 +2,11 @@
  * Brave Search provider.
  *
  * Provenance: pi-websearch/packages/core/src/providers/brave.ts
- * Borrowed: API call structure, extra_snippets concatenation for richer content.
+ * Borrowed: API call structure.
  */
 
 import type { SearchOptions, SearchProvider, SearchResult } from "../types.js";
+import { MAX_SNIPPET_CHARS } from "../types.js";
 import { SearchProviderError } from "../errors.js";
 import { fetchWithProxy } from "../../util/proxy.js";
 import { readResponseJson, readResponseText } from "../../util/download.js";
@@ -70,12 +71,26 @@ export const brave: SearchProvider = {
       (r: { title: string; url: string; description: string; extra_snippets?: string[] }) => ({
         title: r.title,
         url: r.url,
-        snippet: [r.description, ...(r.extra_snippets ?? [])].filter(Boolean).join("\n\n"),
+        snippet: buildSnippet(r.description, r.extra_snippets),
         provider: "brave",
       }),
     );
   },
 };
+
+/** Append extra_snippets only until the model-visible cap is covered.
+ * Concatenating all of them tripled result size without adding signal. */
+function buildSnippet(description: string | undefined, extraSnippets?: string[]): string {
+  let snippet = description ?? "";
+  for (const extra of extraSnippets ?? []) {
+    // Measure like compactSnippet (whitespace collapsed) so the model-visible
+    // cap is actually covered before we stop appending.
+    if (snippet.replace(/\s+/g, " ").trim().length >= MAX_SNIPPET_CHARS) break;
+    if (!extra) continue;
+    snippet = snippet ? `${snippet}\n\n${extra}` : extra;
+  }
+  return snippet;
+}
 
 /** Map our freshness values to Brave's format */
 const freshnessMap: Record<string, string> = {

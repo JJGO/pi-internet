@@ -27,7 +27,7 @@ test("normalizeUrl returns input on invalid URL", () => {
 
 // ── mergeResults ──────────────────────────────────────────
 
-test("mergeResults deduplicates by URL", () => {
+test("mergeResults deduplicates by URL, keeping the higher-priority provider", () => {
   const set1: SearchResult[] = [
     { title: "A", url: "https://example.com/a", snippet: "short", provider: "brave" },
   ];
@@ -36,7 +36,21 @@ test("mergeResults deduplicates by URL", () => {
   ];
   const merged = mergeResults([set1, set2], 10);
   assert.equal(merged.length, 1);
-  assert.equal(merged[0].snippet, "much longer snippet here"); // keeps richer snippet
+  // First-seen result wins; a longer duplicate snippet is not a quality signal.
+  assert.equal(merged[0].provider, "brave");
+  assert.equal(merged[0].snippet, "short");
+});
+
+test("mergeResults replaces an empty snippet with a later non-empty duplicate", () => {
+  const set1: SearchResult[] = [
+    { title: "A", url: "https://example.com/a", snippet: "", provider: "kagi" },
+  ];
+  const set2: SearchResult[] = [
+    { title: "A", url: "https://example.com/a", snippet: "has content", provider: "tavily" },
+  ];
+  const merged = mergeResults([set1, set2], 10);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].snippet, "has content");
 });
 
 test("mergeResults interleaves from multiple providers", () => {
