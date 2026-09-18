@@ -185,6 +185,27 @@ export async function downloadImageToTemp(
   }
 }
 
+/** Shared response handling for HTTP and Redlib; consumes the existing response. */
+export async function fetchImageResponse(response: Response, url: string, signal?: AbortSignal): Promise<FetchResult> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!readableImageExtension(contentType)) {
+    await response.body?.cancel();
+    return {
+      url,
+      title: "",
+      content: `Image format ${contentType.split(";")[0]} cannot be displayed by the read tool (supported: jpg/png/gif/webp/bmp). Image URL: ${url}`,
+      contentType: normalizeImageMimeType(contentType),
+      error: null,
+    };
+  }
+  try {
+    const image = await downloadImageToTemp(response, url, { signal });
+    return formatImageFetchResult(url, image);
+  } catch (error) {
+    return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export function formatImageFetchResult(url: string, image: DownloadedImage): FetchResult {
   const dims = image.dimensions ? `${image.dimensions.width}x${image.dimensions.height}` : "unknown";
   const content = [
@@ -204,6 +225,7 @@ export function formatImageFetchResult(url: string, image: DownloadedImage): Fet
     content,
     error: null,
     artifacts: { imageDownload: image.path },
+    contentType: image.mimeType,
   };
 }
 

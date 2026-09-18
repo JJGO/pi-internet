@@ -21,7 +21,7 @@ import {
   type PdfConverter,
 } from "./pdf.js";
 import { readResponseText } from "../util/download.js";
-import { downloadImageToTemp, formatImageFetchResult, readableImageExtension } from "./image.js";
+import { fetchImageResponse } from "./image.js";
 import { fetchWithTransientRetry } from "../util/retry-fetch.js";
 import { combinedSignal } from "../util/signal.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
@@ -50,6 +50,8 @@ export interface FetchResult {
   images?: Array<{ data: string; mimeType: string }>;
   fullOutputPath?: string;
   artifacts?: FetchArtifacts;
+  /** Response MIME type when content contains generated binary-response metadata. */
+  contentType?: string;
 }
 
 export interface HttpFetchOptions {
@@ -167,21 +169,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   }
 
   if (normalizedContentType.includes("image/")) {
-    if (!readableImageExtension(contentType)) {
-      await response.body?.cancel();
-      return {
-        url,
-        title: "",
-        content: `Image format ${contentType.split(";")[0]} cannot be displayed by the read tool (supported: jpg/png/gif/webp/bmp). Image URL: ${url}`,
-        error: null,
-      };
-    }
-    try {
-      const image = await downloadImageToTemp(response, url, { signal });
-      return formatImageFetchResult(url, image);
-    } catch (error) {
-      return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
-    }
+    return fetchImageResponse(response, url, signal);
   }
 
   if (

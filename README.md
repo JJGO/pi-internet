@@ -40,7 +40,7 @@ Fetch any URL and get clean, token-efficient markdown. Pass `urls: [...]` (up to
 |----------|---------|
 | **GitHub repos/files/trees** | Clones repo locally, returns tree + README or file content. Use `read`/`bash` on the local path. |
 | **GitHub PRs/issues/releases/Actions/gists/commits** | Uses `gh`/GitHub REST API and returns structured Markdown instead of brittle GitHub HTML extraction. Actions logs use progressive disclosure: `verbose: true` saves logs to a temp file and reports the path. |
-| **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments. Non-verbose output is capped; use `verbose: true` for all parsed comments and deeper replies. |
+| **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments, with post image URLs in an `Images` section. Non-verbose comments are capped; use `verbose: true` for all parsed comments and deeper replies. |
 | **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **arXiv** | Respects `/abs`, `/html`, `/pdf`, and `/src`. Every result starts with authoritative representation links from the abstract page. PDF and source requests expose private temporary artifacts. |
@@ -176,9 +176,11 @@ Kagi also checks `~/.pi/kagi-search.json` and `~/.kagi_session_token` as fallbac
 
 `PI_INTERNET_SOCKS_PROXY` overrides `piInternet.fetch.socksProxy` when both are set.
 
-When `PI_INTERNET_REDLIB_PROXY` or `piInternet.reddit.proxyHost` is set, both normal Reddit URLs and URLs on that configured Redlib host are parsed with the Reddit handler.
+When `PI_INTERNET_REDLIB_PROXY` or `piInternet.reddit.proxyHost` is set, normal Reddit URLs and URLs on that configured Redlib host use the Reddit handler. Images on `i.redd.it` and `preview.redd.it` are also fetched through that host (`/img/...` and `/preview/pre/...`), preserving signed query strings. Image responses use the same local download path as regular HTTP. Configured Redlib failures are errors, with no direct Reddit/Jina fallback; cross-origin redirects are blocked.
 
-If these env vars are unset, SOCKS proxying stays disabled and Reddit/X URLs fall through to regular HTTP fetching. Direct Reddit fetches that fail include a hint to configure `PI_INTERNET_REDLIB_PROXY`.
+Redlib thread pages list all gallery/single-post image URLs, without downloading them. Fetch a selected URL with `fetch_url`, then inspect the local file with `read`. Listings, comment images, and videos are not included in this image disclosure.
+
+Without Redlib, Reddit URLs use regular HTTP. Direct `*.redd.it` requests use `Accept: */*` to avoid requesting Reddit's HTML image viewer. Other `*.redd.it` subdomains (such as `external-preview.redd.it`) still use this direct path even when Redlib is configured; no unverified proxy mapping is guessed. Reddit network-security interstitials are reported as errors, not page content, with Redlib setup guidance. SOCKS transport is a separate setting and applies to both direct and Redlib requests.
 
 ### External dependencies
 
@@ -208,7 +210,7 @@ web_search(query)
   → If Brave returns a rate-limit or usage-limit response → disable Brave for the rest of the session
 
 fetch_url(url)
-  → Reddit?    Configured Redlib-compatible proxy → parse posts/comments → render markdown
+  → Reddit?    Configured Redlib-compatible proxy → download images or parse posts/comments + image URLs
   → Twitter?   Configured Nitter-compatible proxy → parse tweets/profile → render markdown
   → GitHub repo/file/tree?  Clone repo → tree + README + file content
   → GitHub PR/issue/release/Actions/gist/commit?  gh/API → structured Markdown

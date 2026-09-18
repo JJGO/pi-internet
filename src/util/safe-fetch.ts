@@ -46,6 +46,8 @@ export interface UserUrlPolicy {
 export interface SafeFetchOptions extends UserUrlPolicy {
   socksProxy?: string | null;
   maxRedirects?: number;
+  /** False keeps requests on the initial origin (e.g. a configured privacy proxy). */
+  allowCrossOriginRedirects?: boolean;
 }
 
 interface ValidatedUserUrl {
@@ -129,7 +131,11 @@ export async function safeFetch(
 
     let next: ValidatedUserUrl;
     try {
-      next = await validateUserUrlForFetch(new URL(location, current.url), options);
+      const nextUrl = new URL(location, current.url);
+      if (options.allowCrossOriginRedirects === false && nextUrl.origin !== current.url.origin) {
+        throw new Error(`Cross-origin redirect blocked: ${current.url.origin} → ${nextUrl.origin}`);
+      }
+      next = await validateUserUrlForFetch(nextUrl, options);
     } catch (error) {
       await response.body?.cancel();
       throw error;

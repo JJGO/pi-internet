@@ -6,13 +6,15 @@
  * OP detection, depth-limited rendering, truncation notices.
  */
 
-import { parse, getText, getAttr, normalizeText, type Doc } from "../util/dom.js";
+import { parse, getText, getAttr } from "../util/dom.js";
 import { combinedSignal } from "../util/signal.js";
 import { readResponseText } from "../util/download.js";
 import { safeFetch } from "../util/safe-fetch.js";
 import type { PiInternetConfig } from "../config.js";
 import type { FetchResult } from "./http.js";
 import type { FetchUrlOptions } from "./router.js";
+import { fetchImageResponse } from "./image.js";
+import { redlibMediaPath } from "./reddit-url.js";
 
 const MAX_PROXY_RESPONSE_BYTES = 5 * 1024 * 1024;
 
@@ -28,6 +30,7 @@ interface RedditPost {
   commentCount?: string;
   body?: string;
   url?: string;
+  imageUrls?: string[];
 }
 
 interface RedditComment {
@@ -44,9 +47,16 @@ interface RedditComment {
 
 function rewriteToProxy(url: string, proxyHost: string): string {
   const parsed = new URL(url);
-  const path = parsed.pathname.replace(/\/+$/, "");
-  const query = parsed.search;
-  return `https://${proxyHost}${path}${query}`;
+  // Validate before rewriting so a trusted proxy cannot launder an unsafe URL.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Unsupported URL scheme: ${parsed.protocol}`);
+  }
+  if (parsed.username || parsed.password) throw new Error("URLs with embedded credentials are not allowed");
+  const mediaPath = redlibMediaPath(url);
+  const path = mediaPath ?? (/^\/(?:img|preview)\//.test(parsed.pathname)
+    ? parsed.pathname
+    : parsed.pathname.replace(/\/+$/, ""));
+  return `https://${proxyHost}${path}${parsed.search}`;
 }
 
 function isThreadUrl(url: string): boolean {
@@ -91,6 +101,31 @@ function extractPost(postEl: Element, baseUrl: string): RedditPost {
   const body = bodyEl ? getText(bodyEl) : undefined;
 
   return { title, author, subreddit, time, score, flair, commentCount, body, url };
+}
+
+function extractPostImages(postEl: Element, pageUrl: string): string[] {
+  const urls = new Set<string>();
+  // Only post media containers, not body/comment images, avatars or video posters.
+  const media = postEl.querySelectorAll(":scope > .gallery figure, :scope > .post_media_content a.post_media_image");
+  for (const element of media) {
+    if (element.querySelector("video")) continue;
+    const image = element.querySelector("img[src], image[href]");
+    if (!image) continue;
+    const link = element.matches("a") ? element : element.querySelector("a[href]");
+    const candidates = [link?.getAttribute("href"), image.getAttribute("src") ?? image.getAttribute("href")];
+    for (const value of candidates) {
+      if (!value || /[\s\u0000-\u001f\u007f]/.test(value)) continue;
+      try {
+        const parsed = new URL(value, pageUrl);
+        if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) continue;
+        urls.add(parsed.href);
+        break;
+      } catch {
+        // Ignore malformed media URLs rather than rendering unsafe output.
+      }
+    }
+  }
+  return [...urls];
 }
 
 function extractComment(el: Element, depth: number, opAuthor: string): RedditComment {
@@ -146,6 +181,9 @@ function renderThread(post: RedditPost, comments: RedditComment[], maxDepth: num
   if (post.flair) meta.push(post.flair);
   lines.push(meta.join(" | "), "");
   if (post.body) lines.push(post.body, "");
+  if (post.imageUrls?.length) {
+    lines.push("## Images", "", ...post.imageUrls.map((url) => `- ${url}`), "");
+  }
   lines.push("---");
 
   const shown = verbose ? comments : comments.slice(0, DEFAULT_COMMENT_LIMIT);
@@ -212,11 +250,23 @@ export async function fetchReddit(
     socksProxy: config.fetch.socksProxy,
     allowPrivateNetworks: config.fetch.allowPrivateNetworks,
     lookup: options.lookup,
+    allowCrossOriginRedirects: false,
   });
 
   if (!res.ok) {
     await res.body?.cancel();
     throw new Error(`Reddit proxy ${proxyHost} returned HTTP ${res.status}`);
+  }
+
+  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (contentType.startsWith("image/")) return fetchImageResponse(res, url, requestSignal);
+  if (contentType !== "text/html" && contentType !== "application/xhtml+xml") {
+    await res.body?.cancel();
+    throw new Error(`Reddit proxy ${proxyHost} returned unsupported content type: ${contentType || "missing"}`);
+  }
+  if (/^\/(?:img|preview)\//.test(new URL(proxyUrl).pathname)) {
+    await res.body?.cancel();
+    throw new Error(`Reddit proxy ${proxyHost} returned HTML instead of an image — possibly blocked`);
   }
 
   const html = await readResponseText(res, MAX_PROXY_RESPONSE_BYTES, requestSignal);
@@ -226,6 +276,7 @@ export async function fetchReddit(
     const postEl = doc.querySelector("div.post");
     if (!postEl) throw new Error("Could not find post content in thread page");
     const post = extractPost(postEl, baseUrl);
+    post.imageUrls = extractPostImages(postEl, res.url || proxyUrl);
 
     // Full body for thread pages
     const bodyEl = postEl.querySelector(".post_body .md");

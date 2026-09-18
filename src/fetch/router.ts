@@ -16,7 +16,7 @@ import type { PiInternetConfig } from "../config.js";
 import { abortableDelay } from "../util/retry-fetch.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
 import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
-import { isRedditMediaUrl } from "./reddit-url.js";
+import { isRedditMediaUrl, redlibMediaPath } from "./reddit-url.js";
 
 // Lazy imports for specialized handlers (loaded on first use).
 // Cache the promise, not the module: concurrent import() of the same module
@@ -173,7 +173,7 @@ export async function fetchUrl(
 
     // 2. Reddit
     const redditProxyHost = config.reddit.proxyHost;
-    if (isRedditUrl(url, redditProxyHost)) {
+    if (isRedditUrl(url, redditProxyHost) || (redditProxyHost && redlibMediaPath(url) !== undefined)) {
       if (redditProxyHost) {
         await throttle(redditProxyHost, config.reddit.rateLimitMs, options.signal);
         result = await (await loadReddit()).fetchReddit(url, config, options);
@@ -287,6 +287,9 @@ function directRedditFailureDetail(result: FetchResult): string | null {
 }
 
 function isRedditVerificationContent(result: FetchResult): boolean {
+  // Download metadata and URL-only image notes are not page text. Filenames
+  // can legitimately contain verification phrases (e.g. js_challenge.gif).
+  if (result.artifacts || result.contentType?.startsWith("image/")) return false;
   const haystack = `${result.title}\n${result.content}`.toLowerCase();
   return (
     haystack.includes("reddit - please wait for verification") ||
@@ -297,16 +300,26 @@ function isRedditVerificationContent(result: FetchResult): boolean {
 }
 
 function isRedditNetworkBlock(result: FetchResult): boolean {
-  // Match the interstitial, not a discussion quoting its headline. Links can
-  // be plain labels (HTML extraction) or Markdown (Jina Reader).
-  const text = result.content
+  const text = normalizeRedditBlockText(result.content);
+  const title = normalizeRedditBlockText(result.title);
+  const headline = /^You've been blocked by network security\.$/i;
+  const fallbackTitle = new URL(result.url).pathname.split("/").pop() || result.url;
+  // Readability can lift a discussion heading out of an otherwise verbatim
+  // quote. Keep that context; only generic, generated or blocker titles match.
+  if (title && !headline.test(title) && !/^reddit(?: - dive into anything)?$/i.test(title)
+    && title !== normalizeRedditBlockText(fallbackTitle)) return false;
+
+  const interstitial = /^You've been blocked by network security\. To continue, log in to your Reddit account or use your developer token\.? If you think you've been blocked by mistake, file a ticket below and we'll look into it\.(?: Log in\s*File a ticket)?$/i;
+  return interstitial.test(text) || interstitial.test(`${title} ${text}`);
+}
+
+function normalizeRedditBlockText(text: string): string {
+  // Links can be plain labels (HTML extraction) or Markdown (Jina Reader).
+  return text
     .replace(/\[([^\]]+)\]\([^\s)]+\)/g, "$1 ")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/^[=-]{3,}\s*$/gm, "")
     .replace(/[’‘]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-  const interstitial = /^You've been blocked by network security\. To continue, log in to your Reddit account or use your developer token\.? If you think you've been blocked by mistake, file a ticket below and we'll look into it\.(?: Log in\s*File a ticket)?$/i;
-  // Readability can lift the headline out of the content into title.
-  return interstitial.test(text) || interstitial.test(`${result.title.trim()} ${text}`);
 }
