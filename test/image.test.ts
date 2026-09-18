@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
@@ -162,7 +163,8 @@ test("downloadImageToTemp: rejects unsupported formats and cancels the body", as
 test("downloadImageToTemp: rejects images over the size limit without leaking the temp dir", async () => {
   const { readdir } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
-  const dirsBefore = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-image-"));
+  const tempPrefix = `pi-internet-image-test-${randomUUID()}-`;
+  const dirsBefore = (await readdir(tmpdir())).filter((d) => d.startsWith(tempPrefix));
 
   // Declared oversized (content-length) and streamed oversized both throw.
   const declared = new Response(pngHeader(1, 1), {
@@ -172,17 +174,17 @@ test("downloadImageToTemp: rejects images over the size limit without leaking th
     },
   });
   await assert.rejects(
-    downloadImageToTemp(declared, "https://example.com/huge.png"),
+    downloadImageToTemp(declared, "https://example.com/huge.png", { tempPrefix }),
     /exceeds the 10 MiB limit/,
   );
 
   const streamed = new Response(Buffer.alloc(2048, 1), { headers: { "content-type": "image/png" } });
   await assert.rejects(
-    downloadImageToTemp(streamed, "https://example.com/huge2.png", { maxBytes: 1024 }),
+    downloadImageToTemp(streamed, "https://example.com/huge2.png", { maxBytes: 1024, tempPrefix }),
     /exceeds the 1024 B limit/,
   );
 
-  const dirsAfter = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-image-"));
+  const dirsAfter = (await readdir(tmpdir())).filter((d) => d.startsWith(tempPrefix));
   assert.deepEqual(dirsAfter, dirsBefore);
 });
 

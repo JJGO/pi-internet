@@ -79,3 +79,24 @@ test("httpFetch cancels unsupported response bodies", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("httpFetch: only Reddit media subdomains receive Accept */*", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const headers: string[] = [];
+    globalThis.fetch = async (_input, init) => {
+      headers.push(new Headers(init?.headers).get("accept") ?? "");
+      return new Response("plain content", { headers: { "content-type": "text/plain" } });
+    };
+    for (const host of ["i.redd.it", "preview.redd.it", "external-preview.redd.it", "styles.redd.it", "I.REDD.IT"]) {
+      await httpFetch(`https://${host}/image.jpg`, { allowPrivateNetworks: true, socksProxy: null });
+      assert.equal(headers.at(-1), "*/*");
+    }
+    for (const host of ["example.com", "reddit.com", "redd.it", "notredd.it", "i.redd.it.evil.test"]) {
+      await httpFetch(`https://${host}/image.jpg`, { allowPrivateNetworks: true, socksProxy: null });
+      assert.equal(headers.at(-1), "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

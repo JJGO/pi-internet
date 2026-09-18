@@ -16,6 +16,7 @@ import type { PiInternetConfig } from "../config.js";
 import { abortableDelay } from "../util/retry-fetch.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
 import { httpFetch, type FetchArtifacts, type FetchResult, type HttpFetchOptions } from "./http.js";
+import { isRedditMediaUrl } from "./reddit-url.js";
 
 // Lazy imports for specialized handlers (loaded on first use).
 // Cache the promise, not the module: concurrent import() of the same module
@@ -238,7 +239,7 @@ export async function fetchUrl(
       lookup: options.lookup,
       pdfConverter: config.pdf.converter,
     });
-    return result;
+    return isRedditMediaUrl(url) ? addDirectRedditGuidance(result) : result;
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -290,6 +291,22 @@ function isRedditVerificationContent(result: FetchResult): boolean {
   return (
     haystack.includes("reddit - please wait for verification") ||
     haystack.includes("please wait for verification") ||
-    haystack.includes("js_challenge")
+    haystack.includes("js_challenge") ||
+    isRedditNetworkBlock(result)
   );
+}
+
+function isRedditNetworkBlock(result: FetchResult): boolean {
+  // Match the interstitial, not a discussion quoting its headline. Links can
+  // be plain labels (HTML extraction) or Markdown (Jina Reader).
+  const text = result.content
+    .replace(/\[([^\]]+)\]\([^\s)]+\)/g, "$1 ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[=-]{3,}\s*$/gm, "")
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  const interstitial = /^You've been blocked by network security\. To continue, log in to your Reddit account or use your developer token\.? If you think you've been blocked by mistake, file a ticket below and we'll look into it\.(?: Log in\s*File a ticket)?$/i;
+  // Readability can lift the headline out of the content into title.
+  return interstitial.test(text) || interstitial.test(`${result.title.trim()} ${text}`);
 }

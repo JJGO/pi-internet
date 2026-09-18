@@ -25,6 +25,7 @@ import { downloadImageToTemp, formatImageFetchResult, readableImageExtension } f
 import { fetchWithTransientRetry } from "../util/retry-fetch.js";
 import { combinedSignal } from "../util/signal.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
+import { isRedditMediaUrl } from "./reddit-url.js";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -124,7 +125,9 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     response = await fetchWithTransientRetry(fetchUrl, {
       headers: {
         "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
+        Accept: isRedditMediaUrl(fetchUrl)
+          ? "*/*"
+          : "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
       },
     }, {
