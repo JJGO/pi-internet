@@ -48,27 +48,42 @@ export async function extractWithJinaReader(
     }
 
     const content = await readResponseText(res, MAX_JINA_RESPONSE_BYTES, requestSignal);
+    const parsed = parseJinaResponse(content);
+    if (!parsed) return null;
 
-    // Jina returns metadata then "Markdown Content:" then the actual content
-    const contentStart = content.indexOf("Markdown Content:");
-    if (contentStart < 0) return null;
-
-    const markdownPart = content.slice(contentStart + 17).trim();
-
-    // Detect failed JS rendering or minimal content
-    if (
-      markdownPart.length < 100 ||
-      markdownPart.startsWith("Loading...") ||
-      markdownPart.startsWith("Please enable JavaScript")
-    ) {
-      return null;
-    }
-
-    const title = extractHeadingTitle(markdownPart) ?? new URL(url).pathname.split("/").pop() ?? url;
-    return { url, title, content: markdownPart, error: null };
+    const title = parsed.title
+      ?? extractHeadingTitle(parsed.content)
+      ?? new URL(url).pathname.split("/").pop()
+      ?? url;
+    return { url, title, content: parsed.content, error: null };
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse a Jina Reader text/markdown response: a metadata header (Title:, URL Source:, ...)
+ * followed by "Markdown Content:" and the extracted markdown.
+ * Returns null when the response is malformed or the content looks like failed JS rendering.
+ */
+export function parseJinaResponse(response: string): { title: string | null; content: string } | null {
+  const contentStart = response.indexOf("Markdown Content:");
+  if (contentStart < 0) return null;
+
+  const content = response.slice(contentStart + 17).trim();
+
+  // Detect failed JS rendering or minimal content
+  if (
+    content.length < 100 ||
+    content.startsWith("Loading...") ||
+    content.startsWith("Please enable JavaScript")
+  ) {
+    return null;
+  }
+
+  const titleMatch = response.slice(0, contentStart).match(/^Title:[ \t]*(.+)$/m);
+  const title = titleMatch?.[1].trim() || null;
+  return { title, content };
 }
 
 

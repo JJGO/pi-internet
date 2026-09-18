@@ -85,6 +85,28 @@ test("extractWithDefuddle: remains local and preserves selectors and Markdown op
   }
 });
 
+test("extractWithDefuddle: relative canonical without og:url does not leak warnings and keeps metadata", async () => {
+  // Regression: linkedom documents have no location, so Defuddle fell back to the
+  // relative canonical URL, threw in `new URL()`, and leaked a console.warn stack.
+  const html = `<html><head><title>Real Title</title><link rel="canonical" href="../2.14/x.html"></head><body><main><h1>Real Title</h1><p>${"long meaningful content words ".repeat(60)}</p></main></body></html>`;
+
+  const warns: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args);
+  };
+
+  try {
+    const result = await extractWithDefuddle(html, "https://docs.pytorch.org/docs/stable/x.html", undefined, {});
+    assert(result);
+    assert.equal(result.title, "Real Title");
+    assert.match(result.content, /long meaningful content words/);
+    assert.deepEqual(warns, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("extractWithDefuddle: fails closed on cancellation and adapter errors", async () => {
   const controller = new AbortController();
   controller.abort();

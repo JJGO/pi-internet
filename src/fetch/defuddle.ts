@@ -23,6 +23,10 @@ export async function extractWithDefuddle(
     if (signal?.aborted) return null;
 
     const document = parseDom(html);
+    // linkedom documents have no location; Defuddle's MetadataExtractor ignores the
+    // url argument and reads doc.location.href, falling back to <link rel="canonical">
+    // which may be relative and make `new URL()` throw (leaking a console.warn).
+    (document as any).location = { href: url };
     if (selector) {
       const selected = document.querySelector(selector);
       if (selected) {
@@ -32,6 +36,7 @@ export async function extractWithDefuddle(
 
     let processingError: unknown;
     const originalConsoleError = console.error;
+    const originalConsoleWarn = console.warn;
     console.error = (...args) => {
       if (isDefuddleConsoleError(args)) {
         if (args[0] === "Defuddle" && args[1] === "Error processing document:") {
@@ -41,6 +46,9 @@ export async function extractWithDefuddle(
       }
       originalConsoleError(...args);
     };
+    // Defuddle's warns are unprefixed (e.g. "Failed to parse URL:"), so suppress all
+    // warns for the duration of the synchronous parse.
+    console.warn = () => {};
 
     let resultPromise: Promise<DefuddleResponse>;
     try {
@@ -52,6 +60,7 @@ export async function extractWithDefuddle(
       });
     } finally {
       console.error = originalConsoleError;
+      console.warn = originalConsoleWarn;
     }
 
     const result = await resultPromise;
