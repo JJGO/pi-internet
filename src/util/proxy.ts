@@ -1,6 +1,10 @@
-import { socksConnector, socksDispatcher } from "fetch-socks";
-import { Agent, buildConnector } from "undici";
+import { SocksClient } from "socks";
+// Bun aliases bare "undici" to a stub and its native fetch ignores dispatchers.
+// Load the installed implementation so SOCKS and DNS pinning remain enforced.
+import { Agent, buildConnector } from "undici/index.js";
+import { fetchWithBunDispatcher } from "./bun-fetch.js";
 import { loadConfig } from "../config.js";
+import { singleHopRedirect } from "./single-hop.js";
 
 type SupportedSocksProtocol = "socks:" | "socks4:" | "socks4a:" | "socks5:" | "socks5h:";
 
@@ -24,7 +28,7 @@ const SUPPORTED_PROTOCOLS = new Set<SupportedSocksProtocol>([
   "socks5h:",
 ]);
 
-const dispatcherCache = new Map<string, unknown>();
+const dispatcherCache = new Map<string, Agent>();
 
 export interface PinnedConnection {
   hostname: string;
@@ -86,7 +90,7 @@ export function parseSocksProxyUrl(url: string): ParsedSocksProxy {
   };
 }
 
-export function getSocksDispatcher(options?: ProxyOptions): unknown {
+export function getSocksDispatcher(options?: ProxyOptions): Agent | undefined {
   const socksProxy = resolveSocksProxy(options);
   const connection = options?.connection;
   if (connection) return getPinnedDispatcher(connection, socksProxy);
@@ -95,7 +99,7 @@ export function getSocksDispatcher(options?: ProxyOptions): unknown {
   const cached = dispatcherCache.get(socksProxy);
   if (cached) return cached;
 
-  const dispatcher = socksDispatcher(parseSocksProxyUrl(socksProxy));
+  const dispatcher = new Agent({ connect: createSocksConnector(parseSocksProxyUrl(socksProxy)) });
   dispatcherCache.set(socksProxy, dispatcher);
   return dispatcher;
 }
@@ -103,11 +107,11 @@ export function getSocksDispatcher(options?: ProxyOptions): unknown {
 function getPinnedDispatcher(connection: PinnedConnection, socksProxy: string | null): Agent {
   const key = [socksProxy ?? "direct", connection.hostname, connection.address, connection.family].join("\0");
   const cached = dispatcherCache.get(key);
-  if (cached) return cached as Agent;
+  if (cached) return cached;
 
   let dispatcher: Agent;
   if (socksProxy) {
-    const connector = socksConnector(parseSocksProxyUrl(socksProxy), { servername: connection.hostname });
+    const connector = createSocksConnector(parseSocksProxyUrl(socksProxy));
     dispatcher = new Agent({
       connect(options, callback) {
         connector({
@@ -134,16 +138,52 @@ function getPinnedDispatcher(connection: PinnedConnection, socksProxy: string | 
   return dispatcher;
 }
 
+function createSocksConnector(proxy: ParsedSocksProxy): buildConnector.connector {
+  const connectTls = buildConnector({});
+  return (options, callback) => {
+    SocksClient.createConnection({
+      command: "connect",
+      proxy,
+      destination: {
+        host: options.hostname,
+        port: Number(options.port || (options.protocol === "https:" ? 443 : 80)),
+      },
+      timeout: 10_000,
+    }).then(({ socket }) => {
+      if (options.protocol !== "https:") return callback(null, socket.setNoDelay());
+      try {
+        connectTls({ ...options, httpSocket: socket }, (error, secureSocket) => {
+          if (error) {
+            socket.destroy();
+            callback(error, null);
+          } else {
+            callback(null, secureSocket);
+          }
+        });
+      } catch (error) {
+        socket.destroy();
+        callback(error instanceof Error ? error : new Error(String(error)), null);
+      }
+    }, (error: Error) => callback(error, null));
+  };
+}
+
+/** Single-hop transport (default redirect:error). Use safeFetch for automatic,
+ * validated redirects; explicit redirect:follow is unsupported on all runtimes. */
 export async function fetchWithProxy(
   input: string | URL | Request,
   init: RequestInit = {},
   options?: ProxyOptions,
 ): Promise<Response> {
+  init = { ...init, redirect: singleHopRedirect(input, init) };
   const dispatcher = getSocksDispatcher(options);
   if (!dispatcher) {
     return fetch(input, init);
   }
 
+  if (process.versions.bun) {
+    return fetchWithBunDispatcher(input, init, dispatcher);
+  }
   return fetch(input, { ...(init as ProxyAwareRequestInit), dispatcher });
 }
 
