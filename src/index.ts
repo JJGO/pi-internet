@@ -18,6 +18,7 @@ import { createSearchRouter } from "./search/router.js";
 import { resetSearchProviderState } from "./search/state.js";
 import { formatResults, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS } from "./search/types.js";
 import { setKagiToken, getKagiToken } from "./search/providers/kagi.js";
+import { runImageSearch, formatImageResults } from "./search/image-search.js";
 import { fetchUrl, resetProxyState } from "./fetch/router.js";
 import { clearCloneCache } from "./fetch/github.js";
 import { runScout, resolveScoutModel, buildScoutPrompt } from "./research/scout.js";
@@ -31,6 +32,11 @@ const OFFLINE_WARNING = "pi-internet disabled because PI_OFFLINE=1";
 
 function isOfflineModeEnabled(): boolean {
   const value = process.env.PI_OFFLINE?.toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+function isImageSearchEnvEnabled(): boolean {
+  const value = process.env.PI_INTERNET_IMAGESEARCH?.toLowerCase();
   return value === "1" || value === "true" || value === "yes";
 }
 
@@ -108,6 +114,9 @@ export default function piInternet(pi: ExtensionAPI) {
   // Track whether web_research is enabled (hidden by default)
   let researchEnabled = false;
   let researchRegistered = false;
+  // image_search is hidden unless PI_INTERNET_IMAGESEARCH=1 or /image-search toggles it on.
+  let imageSearchEnabled = false;
+  let imageSearchRegistered = false;
   let currentProvider: string | undefined;
 
   // Resolve extension directory for passing to subagent
@@ -118,7 +127,22 @@ export default function piInternet(pi: ExtensionAPI) {
     currentProvider = event.model.provider;
   });
 
-  // /toggle-research is intentionally session-only.
+  function setImageSearchEnabled(enabled: boolean) {
+    imageSearchEnabled = enabled;
+    if (enabled && !imageSearchRegistered) {
+      registerImageSearchTool();
+      imageSearchRegistered = true;
+    }
+    const active = pi.getActiveTools();
+    if (enabled && !active.includes("image_search")) {
+      pi.setActiveTools([...active, "image_search"]);
+    } else if (!enabled && active.includes("image_search")) {
+      pi.setActiveTools(active.filter((name) => name !== "image_search"));
+    }
+  }
+
+  // /toggle-research and /image-search are intentionally session-only;
+  // PI_INTERNET_IMAGESEARCH=1 is the persistent opt-in for image_search.
   async function resetSessionState() {
     resetProxyState();
     resetSearchProviderState();
@@ -128,6 +152,7 @@ export default function piInternet(pi: ExtensionAPI) {
     if (active.includes("web_research")) {
       pi.setActiveTools(active.filter((name) => name !== "web_research"));
     }
+    setImageSearchEnabled(isImageSearchEnvEnabled());
   }
 
   // Reset session-scoped state on session change.
@@ -536,6 +561,19 @@ export default function piInternet(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("image-search", {
+    description: "Show or hide the image_search tool for the current session",
+    handler: async (_args, ctx) => {
+      setImageSearchEnabled(!imageSearchEnabled);
+      ctx.ui.notify(
+        imageSearchEnabled
+          ? "image_search tool enabled for this session"
+          : "image_search tool disabled for this session",
+        "info",
+      );
+    },
+  });
+
   pi.registerCommand("toggle-research", {
     description: "Show or hide the web_research tool for the current session",
     handler: async (_args, ctx) => {
@@ -561,7 +599,123 @@ export default function piInternet(pi: ExtensionAPI) {
     },
   });
 
-  // ── Tool 3: web_research (registered lazily via /toggle-research) ──
+  // ── Tool 3: image_search (hidden unless PI_INTERNET_IMAGESEARCH=1 or /image-search) ──
+
+  function registerImageSearchTool() {
+    pi.registerTool({
+      name: "image_search",
+      label: "Image Search",
+      description:
+        "Search the web for images via Kagi. Returns image results (title, source page, " +
+        "full-resolution URL, dimensions) and downloads thumbnails to a local temp directory " +
+        "so you can view candidates with the read tool.",
+      promptSnippet: "Search the web for images and download thumbnails for local viewing",
+      promptGuidelines: [
+        "Use image_search to find images, photos, diagrams, or other visual assets on the web.",
+        "View downloaded thumbnails with the read tool (one image per read call); fetch the full-resolution URL with fetch_url only for chosen candidates.",
+      ],
+      parameters: Type.Object({
+        query: Type.String({ description: "Description of the images to search for." }),
+        numResults: Type.Optional(
+          Type.Number({ description: `Number of results to return (default ${DEFAULT_NUM_RESULTS}, max ${MAX_NUM_RESULTS})` }),
+        ),
+      }),
+
+      async execute(_toolCallId, params, signal, onUpdate, ctx) {
+        if (signal?.aborted) {
+          return { content: [{ type: "text", text: "Cancelled" }], details: {} };
+        }
+
+        const numResults = Math.min(Math.max(params.numResults ?? DEFAULT_NUM_RESULTS, 1), MAX_NUM_RESULTS);
+
+        onUpdate?.({
+          content: [{ type: "text", text: "Searching for images..." }],
+          details: { status: "searching" },
+        });
+
+        const config = getConfig(ctx);
+        const outcome = await runImageSearch({
+          query: params.query,
+          numResults,
+          signal: signal ?? undefined,
+          socksProxy: config.fetch.socksProxy,
+        }).catch(throwTruncatedToolError);
+
+        const output = await truncateToolText(formatImageResults(outcome), {
+          continuation: "Request fewer results to see omitted content.",
+        });
+
+        return {
+          content: [{ type: "text", text: output.text }],
+          details: {
+            provider: outcome.provider,
+            resultCount: outcome.results.length,
+            downloadedCount: outcome.downloadedCount,
+            thumbnailDir: outcome.thumbnailDir,
+            query: params.query,
+            truncation: output.truncation,
+          },
+        };
+      },
+
+      renderCall(args, theme) {
+        const query = typeof args.query === "string" ? args.query : "...";
+        const display = query.length > 60 ? query.slice(0, 57) + "..." : query;
+        let text = theme.fg("toolTitle", theme.bold("image_search "));
+        text += theme.fg("accent", `"${display}"`);
+        return new Text(text, 0, 0);
+      },
+
+      renderResult(result, { expanded, isPartial }, theme) {
+        if (isPartial) {
+          return new Text(theme.fg("warning", "Searching for images..."), 0, 0);
+        }
+
+        const details = result.details as {
+          resultCount?: number;
+          downloadedCount?: number;
+          thumbnailDir?: string;
+          provider?: string;
+        };
+
+        if (result.isError) {
+          const content = result.content.find((c) => c.type === "text");
+          return new Text(theme.fg("error", `✗ ${content?.type === "text" ? content.text : "Image search failed"}`), 0, 0);
+        }
+
+        let text = theme.fg("success", `${details.resultCount ?? 0} images`);
+        text += theme.fg("muted", ` via ${details.provider ?? "kagi"}`);
+        if (details.downloadedCount) {
+          text += theme.fg("muted", `, ${details.downloadedCount} thumbnail(s) downloaded`);
+        }
+
+        if (!expanded) {
+          if (details.thumbnailDir) {
+            text += `\n  ${theme.fg("muted", details.thumbnailDir)}`;
+          }
+          text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;
+          return new Text(text, 0, 0);
+        }
+
+        const content = result.content.find((c) => c.type === "text");
+        if (content?.type === "text") {
+          text += "\n\n" + theme.fg("toolOutput", content.text);
+        }
+        return new Text(text, 0, 0);
+      },
+    });
+  }
+
+  // Register at setup when the env opt-in is present so the tool is active
+  // from the first session (registered tools are active by default; do not
+  // touch the active-tool list before the session exists).
+  if (isImageSearchEnvEnabled()) {
+    registerImageSearchTool();
+    imageSearchRegistered = true;
+    imageSearchEnabled = true;
+  }
+
+  // ── Tool 4: web_research (registered lazily via /toggle-research) ──
   // Skip in scout subagent to prevent infinite recursion.
 
   function registerWebResearchTool() {
