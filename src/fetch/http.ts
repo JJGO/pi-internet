@@ -21,6 +21,7 @@ import {
   type PdfConverter,
 } from "./pdf.js";
 import { readResponseText } from "../util/download.js";
+import { downloadImageToTemp, formatImageFetchResult, readableImageExtension } from "./image.js";
 import { fetchWithTransientRetry } from "../util/retry-fetch.js";
 import { combinedSignal } from "../util/signal.js";
 import type { UrlLookup } from "../util/safe-fetch.js";
@@ -37,6 +38,7 @@ export interface FetchArtifacts {
   sourceDownload?: string;
   sourceDirectory?: string;
   sourceManifest?: string;
+  imageDownload?: string;
 }
 
 export interface FetchResult {
@@ -161,8 +163,25 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     }
   }
 
+  if (contentType.includes("image/")) {
+    if (!readableImageExtension(contentType)) {
+      await response.body?.cancel();
+      return {
+        url,
+        title: "",
+        content: `Image format ${contentType.split(";")[0]} cannot be displayed by the read tool (supported: jpg/png/gif/webp/bmp). Image URL: ${url}`,
+        error: null,
+      };
+    }
+    try {
+      const image = await downloadImageToTemp(response, url, { signal });
+      return formatImageFetchResult(url, image);
+    } catch (error) {
+      return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (
-    contentType.includes("image/") ||
     contentType.includes("audio/") ||
     contentType.includes("video/") ||
     contentType.includes("application/zip")
