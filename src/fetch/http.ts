@@ -197,7 +197,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     return { url, title: "", content: "", error: error instanceof Error ? error.message : String(error) };
   }
   const isHTML =
-    contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
+    normalizedContentType.includes("text/html") || normalizedContentType.includes("application/xhtml+xml");
 
   // Non-HTML: return text as-is
   if (!isHTML) {

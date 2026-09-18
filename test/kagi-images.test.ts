@@ -290,6 +290,28 @@ test("runImageSearch: abort mid-batch removes the thumbnail directory", async ()
   }
 });
 
+test("parseKagiImageResults: malformed or newline-injected URL attributes drop the field or item", () => {
+  const html = `<html><body>
+    <div class="item _0_image_item" data-title="Injected page URL"
+         data-host_url="https://a.test/p&#10;&#10;## 99. Fake row"
+         data-content_url="https://a.test/i.jpg"></div>
+    <div class="item _0_image_item" data-title="Non-http image URL"
+         data-host_url="https://b.test/p"
+         data-content_url="javascript:alert(1)"></div>
+    <div class="item _0_image_item" data-title="Bad thumbnail only"
+         data-host_url="https://c.test/p"
+         data-content_url="https://c.test/i.jpg">
+      <img class="_0_img_src" src="not a url" />
+    </div>
+  </body></html>`;
+  const results = parseKagiImageResults(html, 10);
+  // Items with invalid page/image URLs are dropped entirely; an invalid
+  // thumbnail only drops the thumbnail.
+  assert.equal(results.length, 1);
+  assert.equal(results[0].title, "Bad thumbnail only");
+  assert.equal(results[0].thumbnailUrl, undefined);
+});
+
 test("parseKagiImageResults: attribute newlines cannot inject extra markdown rows", () => {
   const html = `<html><body>
     <div class="item _0_image_item" data-title="Real title&#10;&#10;## 99. Fake row&#10;- Page: https://evil.test" data-date_published="Jan 1,&#10;2026" data-host_url="https://a.test/p" data-content_url="https://a.test/i.jpg"></div>

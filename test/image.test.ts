@@ -249,6 +249,28 @@ test("httpFetch: unsupported image format returns a URL-only note, not an error"
   }
 });
 
+test("httpFetch: image content-type detection is case-insensitive", async () => {
+  const originalFetch = globalThis.fetch;
+  let downloadPath: string | undefined;
+  try {
+    globalThis.fetch = async () => new Response(pngHeader(2, 2), {
+      headers: { "content-type": "Image/PNG" },
+    });
+
+    const result = await httpFetch("https://example.com/upper.png", {
+      allowPrivateNetworks: true,
+      socksProxy: null,
+    });
+    downloadPath = result.artifacts?.imageDownload;
+
+    assert.equal(result.error, null);
+    assert.match(result.content, /Downloaded image to: /);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (downloadPath) await rm(dirname(downloadPath), { recursive: true, force: true });
+  }
+});
+
 test("httpFetch: oversized image surfaces a size-limit error", async () => {
   const originalFetch = globalThis.fetch;
   try {

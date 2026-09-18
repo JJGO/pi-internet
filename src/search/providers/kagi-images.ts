@@ -133,13 +133,14 @@ export function parseKagiImageResults(html: string, limit: number): KagiImageRes
 
     // Collapse whitespace (linkedom decodes entities, so attribute values can
     // contain newlines) to keep hostile pages from injecting fake result rows
-    // into the markdown output.
+    // into the markdown output. URL fields must parse as http(s) URLs, which
+    // also rejects newline-injected values.
     const title = compactText(el.getAttribute("data-title"));
-    const pageUrl = el.getAttribute("data-host_url") ?? "";
-    const imageUrl = el.getAttribute("data-content_url") ?? "";
+    const pageUrl = asHttpUrl(el.getAttribute("data-host_url"));
+    const imageUrl = asHttpUrl(el.getAttribute("data-content_url"));
     if (!pageUrl || !imageUrl) continue;
 
-    const thumbnailUrl = el.querySelector("._0_img_src")?.getAttribute("src") ?? undefined;
+    const thumbnailUrl = asHttpUrl(el.querySelector("._0_img_src")?.getAttribute("src") ?? null) || undefined;
 
     results.push({
       title: title || compactText(el.getAttribute("data-filename")) || imageUrl,
@@ -157,6 +158,18 @@ export function parseKagiImageResults(html: string, limit: number): KagiImageRes
 
 function compactText(value: string | null): string {
   return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+/** Return the value only when it is a well-formed http(s) URL without
+ * whitespace; scraped URLs flow into markdown output and fetches. */
+function asHttpUrl(value: string | null): string {
+  if (!value || /\s/.test(value)) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? value : "";
+  } catch {
+    return "";
+  }
 }
 
 function asPositiveInt(value: string | null): number | undefined {
