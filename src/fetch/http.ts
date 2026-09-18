@@ -163,7 +163,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     }
   }
 
-  if (contentType.includes("image/")) {
+  if (normalizedContentType.includes("image/")) {
     if (!readableImageExtension(contentType)) {
       await response.body?.cancel();
       return {
@@ -182,9 +182,9 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
   }
 
   if (
-    contentType.includes("audio/") ||
-    contentType.includes("video/") ||
-    contentType.includes("application/zip")
+    normalizedContentType.includes("audio/") ||
+    normalizedContentType.includes("video/") ||
+    normalizedContentType.includes("application/zip")
   ) {
     await response.body?.cancel();
     return { url, title: "", content: "", error: `Unsupported content type: ${contentType.split(";")[0]}` };

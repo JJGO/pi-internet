@@ -131,7 +131,10 @@ export function parseKagiImageResults(html: string, limit: number): KagiImageRes
   for (const el of root.querySelectorAll("._0_image_item")) {
     if (results.length >= limit) break;
 
-    const title = el.getAttribute("data-title")?.trim() ?? "";
+    // Collapse whitespace (linkedom decodes entities, so attribute values can
+    // contain newlines) to keep hostile pages from injecting fake result rows
+    // into the markdown output.
+    const title = compactText(el.getAttribute("data-title"));
     const pageUrl = el.getAttribute("data-host_url") ?? "";
     const imageUrl = el.getAttribute("data-content_url") ?? "";
     if (!pageUrl || !imageUrl) continue;
@@ -139,17 +142,21 @@ export function parseKagiImageResults(html: string, limit: number): KagiImageRes
     const thumbnailUrl = el.querySelector("._0_img_src")?.getAttribute("src") ?? undefined;
 
     results.push({
-      title: title || el.getAttribute("data-filename") || imageUrl,
+      title: title || compactText(el.getAttribute("data-filename")) || imageUrl,
       pageUrl,
       imageUrl,
       thumbnailUrl,
       width: asPositiveInt(el.getAttribute("data-width")),
       height: asPositiveInt(el.getAttribute("data-height")),
-      published: el.getAttribute("data-date_published")?.trim() || undefined,
+      published: compactText(el.getAttribute("data-date_published")) || undefined,
     });
   }
 
   return results;
+}
+
+function compactText(value: string | null): string {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
 }
 
 function asPositiveInt(value: string | null): number | undefined {
@@ -159,9 +166,11 @@ function asPositiveInt(value: string | null): number | undefined {
 }
 
 function isRedirectError(error: unknown): boolean {
-  for (let current = error; current; current = (current as { cause?: unknown }).cause) {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 10; depth++) {
     const message = current instanceof Error ? current.message : String(current);
     if (/redirect/i.test(message)) return true;
+    current = (current as { cause?: unknown }).cause;
   }
   return false;
 }

@@ -639,6 +639,7 @@ export default function piInternet(pi: ExtensionAPI) {
           numResults,
           signal: signal ?? undefined,
           socksProxy: config.fetch.socksProxy,
+          allowPrivateNetworks: config.fetch.allowPrivateNetworks,
         }).catch(throwTruncatedToolError);
 
         const output = await truncateToolText(formatImageResults(outcome), {

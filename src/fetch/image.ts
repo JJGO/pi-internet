@@ -10,7 +10,7 @@
  * Other image formats return a URL-only note instead of a file nobody can view.
  */
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { downloadResponseToFile } from "../util/download.js";
@@ -160,23 +160,29 @@ export async function downloadImageToTemp(
   }
 
   const directory = await mkdtemp(join(tmpdir(), options.tempPrefix ?? "pi-internet-image-"));
-  const path = join(directory, imageFilename(url, extension));
-  // 128KB header window: enough for PNG/GIF/BMP/WebP markers and JPEG SOF
-  // behind typical EXIF blocks.
-  const download = await downloadResponseToFile(
-    response,
-    path,
-    options.maxBytes ?? MAX_IMAGE_BYTES,
-    options.signal,
-    128 * 1024,
-  );
+  try {
+    const path = join(directory, imageFilename(url, extension));
+    // 128KB header window: enough for PNG/GIF/BMP/WebP markers and JPEG SOF
+    // behind typical EXIF blocks.
+    const download = await downloadResponseToFile(
+      response,
+      path,
+      options.maxBytes ?? MAX_IMAGE_BYTES,
+      options.signal,
+      128 * 1024,
+    );
 
-  return {
-    path,
-    mimeType,
-    bytes: download.bytes,
-    dimensions: parseImageDimensions(download.header, mimeType),
-  };
+    return {
+      path,
+      mimeType,
+      bytes: download.bytes,
+      dimensions: parseImageDimensions(download.header, mimeType),
+    };
+  } catch (error) {
+    // Do not leak the directory or a partial file on size-cap/I/O failures.
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export function formatImageFetchResult(url: string, image: DownloadedImage): FetchResult {

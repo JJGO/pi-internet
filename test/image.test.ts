@@ -63,6 +63,30 @@ function webpVp8Header(width: number, height: number): Buffer {
   return buf;
 }
 
+function webpVp8lHeader(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(30);
+  buf.write("RIFF", 0, "latin1");
+  buf.writeUInt32LE(22, 4);
+  buf.write("WEBP", 8, "latin1");
+  buf.write("VP8L", 12, "latin1");
+  buf[20] = 0x2f; // VP8L signature byte
+  // 14-bit width-1, then 14-bit height-1, packed little-endian from bit 0.
+  const bits = (width - 1) | ((height - 1) << 14);
+  buf.writeUInt32LE(bits >>> 0, 21);
+  return buf;
+}
+
+function webpVp8xHeader(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(30);
+  buf.write("RIFF", 0, "latin1");
+  buf.writeUInt32LE(22, 4);
+  buf.write("WEBP", 8, "latin1");
+  buf.write("VP8X", 12, "latin1");
+  buf.writeUIntLE(width - 1, 24, 3); // 24-bit canvas width - 1
+  buf.writeUIntLE(height - 1, 27, 3); // 24-bit canvas height - 1
+  return buf;
+}
+
 // ── readableImageExtension ──────────────────────────────
 
 test("readableImageExtension: supported formats map to extensions", () => {
@@ -89,6 +113,12 @@ test("parseImageDimensions: parses each supported format", () => {
   assert.deepEqual(parseImageDimensions(bmpHeader(32, 64), "image/bmp"), { width: 32, height: 64 });
   assert.deepEqual(parseImageDimensions(jpegHeader(1024, 768), "image/jpeg"), { width: 1024, height: 768 });
   assert.deepEqual(parseImageDimensions(webpVp8Header(300, 200), "image/webp"), { width: 300, height: 200 });
+  assert.deepEqual(parseImageDimensions(webpVp8lHeader(300, 200), "image/webp"), { width: 300, height: 200 });
+  assert.deepEqual(parseImageDimensions(webpVp8xHeader(4000, 3000), "image/webp"), { width: 4000, height: 3000 });
+});
+
+test("parseImageDimensions: BMP top-down (negative height) is reported as positive", () => {
+  assert.deepEqual(parseImageDimensions(bmpHeader(32, -64), "image/bmp"), { width: 32, height: 64 });
 });
 
 test("parseImageDimensions: returns undefined for malformed headers", () => {
@@ -129,18 +159,31 @@ test("downloadImageToTemp: rejects unsupported formats and cancels the body", as
   assert.equal(cancelled, true);
 });
 
-test("downloadImageToTemp: rejects images over the size limit", async () => {
-  const response = new Response(pngHeader(1, 1), {
+test("downloadImageToTemp: rejects images over the size limit without leaking the temp dir", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const dirsBefore = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-image-"));
+
+  // Declared oversized (content-length) and streamed oversized both throw.
+  const declared = new Response(pngHeader(1, 1), {
     headers: {
       "content-type": "image/png",
       "content-length": String(MAX_IMAGE_BYTES + 1),
     },
   });
-
   await assert.rejects(
-    downloadImageToTemp(response, "https://example.com/huge.png"),
+    downloadImageToTemp(declared, "https://example.com/huge.png"),
     /exceeds the 10 MiB limit/,
   );
+
+  const streamed = new Response(Buffer.alloc(2048, 1), { headers: { "content-type": "image/png" } });
+  await assert.rejects(
+    downloadImageToTemp(streamed, "https://example.com/huge2.png", { maxBytes: 1024 }),
+    /exceeds the 1024 B limit/,
+  );
+
+  const dirsAfter = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-image-"));
+  assert.deepEqual(dirsAfter, dirsBefore);
 });
 
 test("downloadImageToTemp: falls back to a generic filename", async () => {

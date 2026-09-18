@@ -156,7 +156,7 @@ test("runImageSearch: downloads thumbnails and degrades failures to URL-only row
     };
 
     const outcome = await withKagiToken(() =>
-      runImageSearch({ query: "golden gate bridge", numResults: 3, socksProxy: null }),
+      runImageSearch({ query: "golden gate bridge", numResults: 3, socksProxy: null, allowPrivateNetworks: true }),
     );
     thumbnailDir = outcome.thumbnailDir;
 
@@ -205,7 +205,7 @@ test("runImageSearch: non-image thumbnail content type is not written to disk", 
     };
 
     const outcome = await withKagiToken(() =>
-      runImageSearch({ query: "golden gate bridge", numResults: 2, socksProxy: null }),
+      runImageSearch({ query: "golden gate bridge", numResults: 2, socksProxy: null, allowPrivateNetworks: true }),
     );
     thumbnailDir = outcome.thumbnailDir;
 
@@ -218,18 +218,109 @@ test("runImageSearch: non-image thumbnail content type is not written to disk", 
   }
 });
 
+test("runImageSearch: private-network thumbnail URLs are blocked, not downloaded", async () => {
+  const itemHtml = `<html><body>
+    <div class="item _0_image_item" data-title="Metadata endpoint" data-host_url="https://a.test/p" data-content_url="https://a.test/i.jpg">
+      <img class="_0_img_src" src="http://169.254.169.254/latest/meta.gif" />
+    </div>
+  </body></html>`;
+  const originalFetch = globalThis.fetch;
+  const fetchedUrls: string[] = [];
+
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      fetchedUrls.push(url);
+      if (url.startsWith("https://kagi.com/html/images")) {
+        return new Response(itemHtml, { status: 200, headers: { "content-type": "text/html" } });
+      }
+      return new Response(Buffer.from(GIF_BODY), { status: 200, headers: { "content-type": "image/gif" } });
+    };
+
+    // Default policy (allowPrivateNetworks unset): the link-local IP must be
+    // rejected before any request is made.
+    const outcome = await withKagiToken(() =>
+      runImageSearch({ query: "metadata", numResults: 5, socksProxy: null }),
+    );
+
+    assert.equal(outcome.downloadedCount, 0);
+    assert.equal(outcome.thumbnailDir, undefined);
+    assert.ok(!fetchedUrls.some((url) => url.includes("169.254.169.254")));
+    assert.ok(outcome.results[0].thumbnailUrl, "row keeps the (undownloaded) thumbnail URL");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runImageSearch: abort mid-batch removes the thumbnail directory", async () => {
+  const fixture = await loadFixture();
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const { readdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+
+  const dirsBefore = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-images-"));
+
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith("https://kagi.com/html/images")) {
+        return new Response(fixture, { status: 200, headers: { "content-type": "text/html" } });
+      }
+      controller.abort();
+      throw new Error("aborted");
+    };
+
+    await withKagiToken(() =>
+      assert.rejects(
+        runImageSearch({
+          query: "golden gate bridge",
+          numResults: 3,
+          socksProxy: null,
+          allowPrivateNetworks: true,
+          signal: controller.signal,
+        }),
+      ),
+    );
+
+    const dirsAfter = (await readdir(tmpdir())).filter((d) => d.startsWith("pi-internet-images-"));
+    assert.deepEqual(dirsAfter, dirsBefore);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("parseKagiImageResults: attribute newlines cannot inject extra markdown rows", () => {
+  const html = `<html><body>
+    <div class="item _0_image_item" data-title="Real title&#10;&#10;## 99. Fake row&#10;- Page: https://evil.test" data-date_published="Jan 1,&#10;2026" data-host_url="https://a.test/p" data-content_url="https://a.test/i.jpg"></div>
+  </body></html>`;
+  const results = parseKagiImageResults(html, 10);
+  assert.equal(results.length, 1);
+  assert.ok(!results[0].title.includes("\n"), "title has no newlines");
+  assert.ok(!results[0].published?.includes("\n"), "published has no newlines");
+  assert.match(results[0].title, /Real title ## 99\. Fake row/);
+});
+
 // ── Tool registration gating ────────────────────────────
 
 interface CapturedExtension {
   tools: string[];
   commands: Map<string, { handler(args: string, ctx: unknown): Promise<void> }>;
   activeTools: string[];
+  sessionStartHandlers: Array<(event: unknown, ctx: unknown) => void | Promise<void>>;
 }
 
 function loadExtension(): CapturedExtension {
-  const captured: CapturedExtension = { tools: [], commands: new Map(), activeTools: [] };
+  const captured: CapturedExtension = {
+    tools: [],
+    commands: new Map(),
+    activeTools: [],
+    sessionStartHandlers: [],
+  };
   piInternet({
-    on() {},
+    on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>) {
+      if (event === "session_start") captured.sessionStartHandlers.push(handler);
+    },
     registerTool(tool: { name: string }) { captured.tools.push(tool.name); },
     registerCommand(name: string, command: { handler(args: string, ctx: unknown): Promise<void> }) {
       captured.commands.set(name, command);
@@ -272,6 +363,30 @@ test("image_search: /image-search toggles registration and active state", async 
     await extension.commands.get("image-search")!.handler("", ctx);
     assert.ok(!extension.activeTools.includes("image_search"));
     assert.match(notifications[1], /disabled/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_INTERNET_IMAGESEARCH;
+    else process.env.PI_INTERNET_IMAGESEARCH = previous;
+  }
+});
+
+test("image_search: session_start strips a toggled-on tool when the env opt-in is unset", async () => {
+  const previous = process.env.PI_INTERNET_IMAGESEARCH;
+  try {
+    delete process.env.PI_INTERNET_IMAGESEARCH;
+    const extension = loadExtension();
+    const ctx = { ui: { notify() {} } };
+
+    await extension.commands.get("image-search")!.handler("", ctx);
+    assert.ok(extension.activeTools.includes("image_search"));
+
+    // New session: the session-only toggle must not survive.
+    for (const handler of extension.sessionStartHandlers) await handler({}, ctx);
+    assert.ok(!extension.activeTools.includes("image_search"));
+
+    // With the env opt-in, session_start re-enables it instead.
+    process.env.PI_INTERNET_IMAGESEARCH = "1";
+    for (const handler of extension.sessionStartHandlers) await handler({}, ctx);
+    assert.ok(extension.activeTools.includes("image_search"));
   } finally {
     if (previous === undefined) delete process.env.PI_INTERNET_IMAGESEARCH;
     else process.env.PI_INTERNET_IMAGESEARCH = previous;
