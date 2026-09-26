@@ -41,7 +41,7 @@ Fetch any URL and get clean, token-efficient markdown. Pass `urls: [...]` (up to
 | **GitHub repos/files/trees** | Clones repo locally, returns tree + README or file content. Use `read`/`bash` on the local path. |
 | **GitHub PRs/issues/releases/Actions/gists/commits** | Uses `gh`/GitHub REST API and returns structured Markdown instead of brittle GitHub HTML extraction. Actions logs use progressive disclosure: `verbose: true` saves logs to a temp file and reports the path. |
 | **Reddit** | Uses a configurable Redlib-compatible proxy when configured. Structured posts + nested comments, with post image URLs in an `Images` section. Non-verbose comments are capped; use `verbose: true` for all parsed comments and deeper replies. |
-| **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection. |
+| **Twitter/X** | Uses a configurable Nitter-compatible proxy when configured. Profiles, threads, tweets with RT/quote detection and still-image URLs grouped by tweet or quote. |
 | **YouTube** | Videos return metadata, cleaned descriptions, chapters, and timestamped transcripts via yt-dlp. Vision-capable models can request a frame by adding `pi-internet-screenshot=HH:MM:SS` to a video URL. Playlists and channels preview 25 entries inline and write the full list to cache. |
 | **arXiv** | Respects `/abs`, `/html`, `/pdf`, and `/src`. Every result starts with authoritative representation links from the abstract page. PDF and source requests expose private temporary artifacts. |
 | **PDF** | Streams at most 20 MiB, retains the original PDF and extracted Markdown in a private OS-temporary directory, and extracts up to 100 pages. Uses local `pymupdf4llm` or `pdftotext` when installed (structured headings/tables), falling back to bundled unpdf text-layer extraction. |
@@ -181,6 +181,8 @@ When `PI_INTERNET_REDLIB_PROXY` or `piInternet.reddit.proxyHost` is set, normal 
 Redlib thread pages list all gallery/single-post image URLs, without downloading them. Fetch a selected URL with `fetch_url`, then inspect the local file with `read`. Listings, comment images, and videos are not included in this image disclosure.
 
 Without Redlib, Reddit URLs use regular HTTP. Direct `*.redd.it` requests use `Accept: */*` to avoid requesting Reddit's HTML image viewer. Other `*.redd.it` subdomains (such as `external-preview.redd.it`) still use this direct path even when Redlib is configured; no unverified proxy mapping is guessed. Reddit network-security interstitials are reported as errors, not page content, with Redlib setup guidance. SOCKS transport is a separate setting and applies to both direct and Redlib requests.
+
+Nitter tweet, thread, reply, and profile results list still-image attachment URLs without downloading them, including quoted-tweet images under the quote. These media URLs remain available in compact output and with `includeLinks: false`. Fetch a selected URL with `fetch_url`, then inspect the downloaded local file with `read`. Avatars, card previews, and video thumbnails are not included.
 
 ### External dependencies
 

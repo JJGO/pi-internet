@@ -31,7 +31,8 @@ interface Tweet {
   repliesCount?: string;
   retweetsCount?: string;
   likesCount?: string;
-  quote?: { username: string; content: string };
+  imageUrls: string[];
+  quote?: { username: string; content: string; imageUrls: string[] };
   cardTitle?: string;
   cardUrl?: string;
 }
@@ -94,7 +95,31 @@ function cleanNitterTitle(title: string): string {
   return title.replace(/\s*\|\s*Nitter\s*$/i, "").trim();
 }
 
-function extractTweet(item: Element, baseUrl: string): Tweet {
+function extractTweetImages(owner: Element, pageUrl: string): string[] {
+  const urls = new Set<string>();
+  // Nitter marks photo attachments with still-image, unlike avatars, cards and video thumbnails.
+  for (const link of owner.querySelectorAll(".attachments a.still-image")) {
+    // A quoted tweet owns its attachments, not the enclosing timeline item.
+    if (link.closest(".quote, .timeline-item") !== owner) continue;
+    const image = link.querySelector("img");
+    if (!image) continue;
+    const candidates = [link.getAttribute("href"), image.getAttribute("src")];
+    for (const value of candidates) {
+      if (!value || /[\s\u0000-\u001f\u007f]/.test(value)) continue;
+      try {
+        const parsed = new URL(value, pageUrl);
+        if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) continue;
+        urls.add(parsed.href);
+        break;
+      } catch {
+        // Ignore malformed media URLs rather than losing the tweet text.
+      }
+    }
+  }
+  return [...urls];
+}
+
+function extractTweet(item: Element, baseUrl: string, pageUrl: string): Tweet {
   const isRetweet = !!item.querySelector(".retweet-header");
   let retweetedBy: string | undefined;
   if (isRetweet) {
@@ -133,6 +158,7 @@ function extractTweet(item: Element, baseUrl: string): Tweet {
     quote = {
       username: getAttr(qUser, "title") || getText(qUser),
       content: qContent ? getText(qContent) : "",
+      imageUrls: extractTweetImages(quoteEl, pageUrl),
     };
   }
 
@@ -146,6 +172,7 @@ function extractTweet(item: Element, baseUrl: string): Tweet {
     repliesCount: stats[0] || undefined,
     retweetsCount: stats[1] || undefined,
     likesCount: stats[2] || undefined,
+    imageUrls: extractTweetImages(item, pageUrl),
     quote, cardTitle, cardUrl,
   };
 }
@@ -179,11 +206,17 @@ function renderTweet(t: Tweet, verbose: boolean): string {
     parts.push(content);
   }
 
+  if (t.imageUrls.length) {
+    parts.push("Images:", ...t.imageUrls.map((url) => `- ${url}`));
+  }
   if (t.cardTitle) {
     parts.push(`> [${t.cardTitle}]${t.cardUrl ? ` (${t.cardUrl})` : ""}`);
   }
   if (t.quote) {
     parts.push(`> QT ${t.quote.username}: ${t.quote.content}`);
+    if (t.quote.imageUrls.length) {
+      parts.push("> Images:", ...t.quote.imageUrls.map((url) => `> - ${url}`));
+    }
   }
 
   const tweetStats: string[] = [];
@@ -226,6 +259,7 @@ export async function fetchTwitter(
 
   const html = await readResponseText(res, MAX_PROXY_RESPONSE_BYTES, requestSignal);
   const doc = parse(html);
+  const pageUrl = res.url || proxyUrl;
 
   if (isArticleUrl(url)) {
     const article = parseArticlePage(doc, options.includeLinks ?? config.fetch.includeLinks);
@@ -245,13 +279,13 @@ export async function fetchTwitter(
     // Thread view
     const mainEl = doc.querySelector(".main-tweet .timeline-item");
     if (!mainEl) throw new Error("Could not find main tweet in thread page");
-    const mainTweet = extractTweet(mainEl, baseUrl);
+    const mainTweet = extractTweet(mainEl, baseUrl, pageUrl);
 
     const threadTweets: Tweet[] = [];
     const afterEl = doc.querySelector(".after-tweet");
     if (afterEl) {
       for (const item of afterEl.querySelectorAll(".timeline-item")) {
-        threadTweets.push(extractTweet(item as Element, baseUrl));
+        threadTweets.push(extractTweet(item as Element, baseUrl, pageUrl));
       }
     }
 
@@ -259,7 +293,7 @@ export async function fetchTwitter(
     const repliesSection = doc.querySelector(".replies");
     if (repliesSection) {
       for (const item of repliesSection.querySelectorAll(".timeline-item")) {
-        const tweet = extractTweet(item as Element, baseUrl);
+        const tweet = extractTweet(item as Element, baseUrl, pageUrl);
         if (tweet.content || tweet.username) replies.push(tweet);
       }
     }
@@ -289,7 +323,7 @@ export async function fetchTwitter(
 
   const tweets: Tweet[] = [];
   for (const item of doc.querySelectorAll(".timeline-item")) {
-    const tweet = extractTweet(item as Element, baseUrl);
+    const tweet = extractTweet(item as Element, baseUrl, pageUrl);
     if (tweet.content || tweet.username) tweets.push(tweet);
   }
 
