@@ -313,7 +313,6 @@ export default function piInternet(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use fetch_url to retrieve the content of a specific URL.",
       "When you need several pages (e.g. multiple search results), pass them together via `urls` in one call instead of separate calls.",
-      "For Reddit and Twitter/X URLs, this tool returns structured, token-efficient content via privacy proxies.",
       "For GitHub repo/file/tree URLs, the repo is cloned locally — use read and bash on the local path. GitHub PRs/issues/releases/Actions/gists are fetched through GitHub-native APIs instead of HTML scraping.",
     ],
     parameters: Type.Object({
