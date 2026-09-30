@@ -32,6 +32,20 @@ Search for "typescript monorepo best practices 2025"
 - Freshness filter: `day`, `week`, `month`, `year`
 - Concise warnings are surfaced when a provider is disabled or a fallback had to fill results
 
+#### Image mode (`kind: "image"`)
+
+```
+web_search({ query: "orthogonal system architecture diagram", kind: "image", numResults: 5 })
+```
+
+Kagi-backed image search. Returns per-result title, source page URL, full-resolution image URL, dimensions, and published date, and downloads thumbnails to a per-call temp directory so the model can view candidates with the `read` tool (one image per `read` call) and fetch the full-resolution URL for chosen ones.
+
+- Kagi only: `provider` must be omitted or `"kagi"`; `freshness` is rejected. Image mode never falls back to web search.
+- Requires a Kagi session token (`/kagi-login`). Uses Kagi's lightweight HTML endpoint (`kagi.com/html/images`) with the session token — the same auth as the Kagi web-search provider. Safe-search follows your Kagi account settings.
+- Thumbnails are signed Kagi proxy URLs checked by the same private-network policy as `fetch_url`; only read-supported formats are written to disk (10MB per-image cap), and failed downloads degrade to URL-only rows.
+
+Because this scrapes Kagi's HTML, a Kagi markup change can break parsing; the tool then returns an error asking the model to tell you so you can update the extension.
+
 ### `fetch_url`
 
 Fetch any URL and get clean, token-efficient markdown. Pass `urls: [...]` (up to 5) to fetch several pages in one call — the output has one section per URL, failures are reported inline, and the truncation budget is split between sections. Auto-detects content type:
@@ -68,20 +82,6 @@ Successful abstract manifests are cached for the Pi process. Explicit older revi
 PDF and source artifacts use private OS-temporary directories. The OS eventually removes them; pi-internet does not promise cleanup at session termination. Source extraction never follows links or executes TeX. It rejects traversal, links, devices, duplicate paths, and oversized archives. Limits are 50 MiB downloaded, 250 MiB expanded, 10,000 entries, and 100 MiB per file.
 
 PDF extraction prefers local converters when installed: `pymupdf4llm` (`pip install pymupdf4llm`) produces Markdown with headings and tables; `pdftotext -layout` (poppler) preserves reading order. Both are local CLIs — the PDF never leaves the machine. Without either, the bundled unpdf parser reads only the text layer and does not faithfully reconstruct complex layouts, equations, tables, figures, or scans. Pin an engine with `pdf.converter` (`"auto"` | `"pymupdf4llm"` | `"pdftotext"` | `"unpdf"`). None of these performs OCR; scanned PDFs still report that OCR is required.
-
-### `image_search` (hidden by default)
-
-Kagi-backed web image search. Returns per-result title, source page URL, full-resolution image URL, dimensions, and published date, and downloads thumbnails for every result to a per-call temp directory so the model can view candidates with the `read` tool (one image per `read` call) and fetch the full-resolution URL for chosen ones.
-
-Enable it persistently with `PI_INTERNET_IMAGESEARCH=1`, or per session with:
-
-```
-/image-search       # Toggle the tool for this session
-```
-
-Requires a Kagi session token (`/kagi-login`). Uses Kagi's lightweight HTML endpoint (`kagi.com/html/images`) with the session token — the same auth as the Kagi web-search provider. Safe-search follows your Kagi account settings. Thumbnails are signed Kagi proxy URLs; only read-supported formats are written to disk (10MB per-image cap), and failed downloads degrade to URL-only rows.
-
-Because this scrapes Kagi's HTML, a Kagi markup change can break parsing; the tool then returns an error asking the model to tell you so you can update the extension.
 
 ### `web_research` (hidden by default)
 
@@ -160,12 +160,6 @@ When Pi starts with `--offline` or `PI_OFFLINE=1`, pi-internet registers no tool
 
 Kagi also checks `~/.pi/kagi-search.json` and `~/.kagi_session_token` as fallbacks.
 
-#### Feature toggles
-
-| Feature | Env Var | Value |
-|---------|---------|-------|
-| Show the `image_search` tool in every session | `PI_INTERNET_IMAGESEARCH` | `1` (session-only alternative: `/image-search`) |
-
 #### Optional proxies
 
 | Feature | Env Var | Value |
@@ -199,7 +193,6 @@ Nitter tweet, thread, reply, and profile results list still-image attachment URL
 |---------|-------------|
 | `/search-providers` | List configured providers, availability, and session-disabled status |
 | `/kagi-login` | Set Kagi session token interactively |
-| `/image-search` | Show/hide the `image_search` tool for the current session |
 | `/toggle-research` | Show/hide the `web_research` tool for the current session |
 
 ## How It Works
@@ -210,6 +203,9 @@ web_search(query)
   → Merge: deduplicate by URL, keep richer snippet
   → If merged results are short → try fallback providers (Tavily) to fill the gap
   → If Brave returns a rate-limit or usage-limit response → disable Brave for the rest of the session
+
+web_search(query, kind: "image")
+  → Kagi image HTML endpoint → parse results → download thumbnails to a temp dir (URL-only on failure)
 
 fetch_url(url)
   → Reddit?    Configured Redlib-compatible proxy → download images or parse posts/comments + image URLs

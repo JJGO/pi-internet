@@ -6,10 +6,24 @@ import test from "node:test";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
+  initTheme,
 } from "@earendil-works/pi-coding-agent";
 import piInternet from "../src/index.ts";
+import { getKagiToken } from "../src/search/providers/kagi.ts";
+
+interface RenderedText {
+  render(width: number): string[];
+}
 
 interface CapturedTool {
+  parameters?: { properties: Record<string, { enum?: string[] }> };
+  renderCall?(args: Record<string, unknown>, theme: unknown, context: unknown): RenderedText;
+  renderResult?(
+    result: unknown,
+    options: { expanded: boolean; isPartial: boolean },
+    theme: unknown,
+    context: unknown,
+  ): RenderedText;
   execute(
     toolCallId: string,
     params: Record<string, unknown>,
@@ -359,4 +373,266 @@ console.log(JSON.stringify({
     if (fullOutputPath) await rm(dirname(fullOutputPath), { recursive: true, force: true });
     await rm(fakeBin, { recursive: true, force: true });
   }
+});
+
+// ── web_search kind: "image" ────────────────────────────
+
+// A 1x1 GIF — a valid readable-format thumbnail body.
+const GIF_BODY = Buffer.from("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+
+// Public IP-literal thumbnail hosts avoid DNS lookups; the link-local one
+// must be blocked by the thumbnail network-safety check.
+const IMAGE_HTML = `<html><body>
+  <div class="item _0_image_item" data-title="Layered architecture" data-host_url="https://docs.test/arch"
+       data-content_url="https://docs.test/arch-full.png" data-width="1600" data-height="900" data-date_published="Aug 21, 2025">
+    <img class="_0_img_src" src="https://8.8.8.8/thumb-1.gif" />
+  </div>
+  <div class="item _0_image_item" data-title="Metadata trap" data-host_url="https://docs.test/trap"
+       data-content_url="https://docs.test/trap-full.png">
+    <img class="_0_img_src" src="http://169.254.169.254/latest/meta.gif" />
+  </div>
+</body></html>`;
+
+interface EnvSnapshot { [name: string]: string | undefined }
+
+function setEnv(values: EnvSnapshot): EnvSnapshot {
+  const previous: EnvSnapshot = {};
+  for (const [name, value] of Object.entries(values)) {
+    previous[name] = process.env[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  return previous;
+}
+
+function restoreEnv(previous: EnvSnapshot): void {
+  setEnv(previous);
+}
+
+/** Mock fetch that serves Kagi image search + thumbnails and a Brave web API. */
+function mockSearchFetch(fetchedUrls: string[]): typeof fetch {
+  return async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    fetchedUrls.push(url);
+    if (url.startsWith("https://kagi.com/html/images")) {
+      return new Response(IMAGE_HTML, { status: 200, headers: { "content-type": "text/html" } });
+    }
+    if (url.startsWith("https://8.8.8.8/")) {
+      return new Response(Buffer.from(GIF_BODY), { status: 200, headers: { "content-type": "image/gif" } });
+    }
+    if (url.includes("api.search.brave.com")) {
+      return new Response(JSON.stringify({
+        web: { results: [{ title: "Brave hit", url: "https://example.com/hit", description: "snippet" }] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("unexpected", { status: 500 });
+  };
+}
+
+const plainTheme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+
+function renderText(component: RenderedText): string {
+  return component.render(200).join("\n");
+}
+
+test("web_search: schema exposes kind web|image and no separate image or toggle tool", () => {
+  const { tools, commands } = loadExtension();
+  assert.deepEqual([...tools.keys()], ["web_search", "fetch_url"]);
+  assert.ok(!commands.has("image-search"));
+  assert.deepEqual(tools.get("web_search")!.parameters?.properties.kind?.enum, ["web", "image"]);
+});
+
+test("web_search: omitted kind and kind web produce identical web results", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const env = setEnv({ BRAVE_API_KEY: "test-key" });
+  const fetchedUrls: string[] = [];
+
+  try {
+    globalThis.fetch = mockSearchFetch(fetchedUrls);
+    const run = (params: Record<string, unknown>) => tools.get("web_search")!.execute(
+      "search-web",
+      { query: "layered architecture", provider: "brave", numResults: 1, ...params },
+      undefined,
+      undefined,
+      {},
+    );
+
+    const omitted = await run({});
+    const explicit = await run({ kind: "web" });
+
+    assert.deepEqual(explicit, omitted);
+    assert.equal(omitted.details?.kind, "web");
+    assert.equal(omitted.details?.provider, "brave");
+    assert.match(textContent(omitted), /Brave hit/);
+    assert.ok(!fetchedUrls.some((url) => url.includes("kagi.com")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv(env);
+  }
+});
+
+test("web_search: kind image uses only the Kagi image pipeline and downloads thumbnails", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  // A configured web provider must not be consulted in image mode.
+  const env = setEnv({ BRAVE_API_KEY: "test-key", KAGI_SESSION_TOKEN: "test-token" });
+  const fetchedUrls: string[] = [];
+  let thumbnailDir: string | undefined;
+
+  try {
+    globalThis.fetch = mockSearchFetch(fetchedUrls);
+    for (const provider of [undefined, "kagi"]) {
+      const result = await tools.get("web_search")!.execute(
+        "search-image",
+        { query: "layered architecture diagram", kind: "image", numResults: 5, provider },
+        undefined,
+        undefined,
+        {},
+      );
+      const text = textContent(result);
+      const details = result.details as {
+        kind?: string;
+        provider?: string;
+        resultCount?: number;
+        downloadedCount?: number;
+        thumbnailDir?: string;
+        items?: Array<{ thumbnailPath?: string; thumbnailUrl?: string }>;
+      };
+      thumbnailDir = details.thumbnailDir;
+
+      assert.equal(details.kind, "image");
+      assert.equal(details.provider, "kagi");
+      assert.equal(details.resultCount, 2);
+      assert.equal(details.downloadedCount, 1);
+      assert.match(text, /## 1\. Layered architecture \(1600x900, Aug 21, 2025\)/);
+      assert.match(text, /- Page: https:\/\/docs\.test\/arch/);
+      assert.match(text, /- Full image: https:\/\/docs\.test\/arch-full\.png/);
+      assert.match(text, /- Thumbnail: \S+image-1\.gif/);
+      assert.match(text, /- Thumbnail \(not downloaded\): http:\/\/169\.254\.169\.254/);
+      assert.deepEqual(await readFile(details.items![0].thumbnailPath!), GIF_BODY);
+
+      await rm(thumbnailDir!, { recursive: true, force: true });
+      thumbnailDir = undefined;
+    }
+
+    assert.ok(!fetchedUrls.some((url) => url.includes("brave.com") || url.includes("kagi.com/html/search")));
+    assert.ok(!fetchedUrls.some((url) => url.includes("169.254.169.254")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv(env);
+    if (thumbnailDir) await rm(thumbnailDir, { recursive: true, force: true });
+  }
+});
+
+test("web_search: kind image rejects unsupported options before any network request", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const env = setEnv({ BRAVE_API_KEY: "test-key", KAGI_SESSION_TOKEN: "test-token" });
+  const fetchedUrls: string[] = [];
+
+  try {
+    globalThis.fetch = mockSearchFetch(fetchedUrls);
+    const run = (params: Record<string, unknown>) => tools.get("web_search")!.execute(
+      "search-image-invalid",
+      { query: "diagram", kind: "image", ...params },
+      undefined,
+      undefined,
+      {},
+    );
+
+    await assert.rejects(run({ provider: "brave" }), /provider "brave" is not supported with kind "image"/);
+    await assert.rejects(run({ freshness: "week" }), /freshness is not supported with kind "image"/);
+    assert.deepEqual(fetchedUrls, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv(env);
+  }
+});
+
+test("web_search: kind image without a Kagi token asks for /kagi-login and does not fall back", async (t) => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const env = setEnv({ BRAVE_API_KEY: "test-key", KAGI_SESSION_TOKEN: undefined });
+  const fetchedUrls: string[] = [];
+
+  try {
+    if (getKagiToken()) {
+      t.skip("a file-based Kagi token is configured on this machine");
+      return;
+    }
+    globalThis.fetch = mockSearchFetch(fetchedUrls);
+    await assert.rejects(
+      tools.get("web_search")!.execute("search-image-auth", { query: "diagram", kind: "image" }, undefined, undefined, {}),
+      /\/kagi-login/,
+    );
+    assert.deepEqual(fetchedUrls, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv(env);
+  }
+});
+
+test("web_search: an aborted signal cancels both modes without network requests", async () => {
+  const tools = loadTools();
+  const originalFetch = globalThis.fetch;
+  const env = setEnv({ BRAVE_API_KEY: "test-key", KAGI_SESSION_TOKEN: "test-token" });
+  const fetchedUrls: string[] = [];
+
+  try {
+    globalThis.fetch = mockSearchFetch(fetchedUrls);
+    const signal = AbortSignal.abort();
+    for (const kind of ["web", "image"]) {
+      const result = await tools.get("web_search")!.execute("search-abort", { query: "q", kind }, signal, undefined, {});
+      assert.equal(textContent(result), "Cancelled");
+      assert.equal(result.details?.kind, kind);
+    }
+    assert.deepEqual(fetchedUrls, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv(env);
+  }
+});
+
+test("web_search: renderers distinguish image results from web results", () => {
+  // keyHint reads the global theme; renderers under test use plainTheme.
+  initTheme(undefined, false);
+  const tool = loadTools().get("web_search")!;
+  const imageArgs = { query: "layered architecture", kind: "image" };
+  const webArgs = { query: "layered architecture" };
+
+  assert.match(renderText(tool.renderCall!(imageArgs, plainTheme, { args: imageArgs })), /web_search "layered architecture" \[image\]/);
+  assert.doesNotMatch(renderText(tool.renderCall!(webArgs, plainTheme, { args: webArgs })), /\[image\]/);
+
+  const imageResult = {
+    content: [{ type: "text", text: "## 1. Layered architecture" }],
+    details: {
+      kind: "image",
+      provider: "kagi",
+      resultCount: 1,
+      downloadedCount: 1,
+      thumbnailDir: "/tmp/pi-internet-images-x",
+      items: [{ title: "Layered architecture", pageUrl: "https://docs.test/arch", width: 1600, height: 900 }],
+    },
+  };
+  const imageText = renderText(tool.renderResult!(imageResult, { expanded: false, isPartial: false }, plainTheme, { args: imageArgs }));
+  assert.match(imageText, /1 images via kagi, 1 thumbnail\(s\) downloaded/);
+  assert.match(imageText, /\/tmp\/pi-internet-images-x/);
+  assert.match(imageText, /Layered architecture \(1600x900\)\s+https:\/\/docs\.test\/arch/);
+
+  const webResult = {
+    content: [{ type: "text", text: "results" }],
+    details: { kind: "web", provider: "brave", resultCount: 1, items: [{ title: "Brave hit", url: "https://example.com/hit" }] },
+  };
+  const webText = renderText(tool.renderResult!(webResult, { expanded: false, isPartial: false }, plainTheme, { args: webArgs }));
+  assert.match(webText, /1 results via brave/);
+  assert.match(webText, /Brave hit\s+https:\/\/example\.com\/hit/);
+
+  const partial = { content: [], details: {} };
+  assert.match(renderText(tool.renderResult!(partial, { expanded: false, isPartial: true }, plainTheme, { args: imageArgs })), /Searching for images/);
+  const error = { content: [{ type: "text", text: "Kagi session token not configured" }], details: {}, isError: true };
+  assert.match(renderText(tool.renderResult!(error, { expanded: false, isPartial: false }, plainTheme, { args: imageArgs })), /✗ Kagi session token not configured/);
 });

@@ -2,7 +2,7 @@
  * pi-internet — Web search, content fetching, and research for Pi.
  *
  * Tools:
- *   - web_search: Multi-provider search with parallel primary + fallback
+ *   - web_search: Multi-provider web search with parallel primary + fallback; Kagi image mode
  *   - fetch_url: URL fetching with specialized handlers (GitHub, Reddit, Twitter, YouTube, PDF)
  *   - web_research: Scout subagent for deep research (hidden by default)
  *
@@ -32,11 +32,6 @@ const OFFLINE_WARNING = "pi-internet disabled because PI_OFFLINE=1";
 
 function isOfflineModeEnabled(): boolean {
   const value = process.env.PI_OFFLINE?.toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
-
-function isImageSearchEnvEnabled(): boolean {
-  const value = process.env.PI_INTERNET_IMAGESEARCH?.toLowerCase();
   return value === "1" || value === "true" || value === "yes";
 }
 
@@ -114,9 +109,6 @@ export default function piInternet(pi: ExtensionAPI) {
   // Track whether web_research is enabled (hidden by default)
   let researchEnabled = false;
   let researchRegistered = false;
-  // image_search is hidden unless PI_INTERNET_IMAGESEARCH=1 or /image-search toggles it on.
-  let imageSearchEnabled = false;
-  let imageSearchRegistered = false;
   let currentProvider: string | undefined;
 
   // Resolve extension directory for passing to subagent
@@ -127,22 +119,7 @@ export default function piInternet(pi: ExtensionAPI) {
     currentProvider = event.model.provider;
   });
 
-  function setImageSearchEnabled(enabled: boolean) {
-    imageSearchEnabled = enabled;
-    if (enabled && !imageSearchRegistered) {
-      registerImageSearchTool();
-      imageSearchRegistered = true;
-    }
-    const active = pi.getActiveTools();
-    if (enabled && !active.includes("image_search")) {
-      pi.setActiveTools([...active, "image_search"]);
-    } else if (!enabled && active.includes("image_search")) {
-      pi.setActiveTools(active.filter((name) => name !== "image_search"));
-    }
-  }
-
-  // /toggle-research and /image-search are intentionally session-only;
-  // PI_INTERNET_IMAGESEARCH=1 is the persistent opt-in for image_search.
+  // /toggle-research is intentionally session-only.
   async function resetSessionState() {
     resetProxyState();
     resetSearchProviderState();
@@ -152,7 +129,6 @@ export default function piInternet(pi: ExtensionAPI) {
     if (active.includes("web_research")) {
       pi.setActiveTools(active.filter((name) => name !== "web_research"));
     }
-    setImageSearchEnabled(isImageSearchEnvEnabled());
   }
 
   // Reset session-scoped state on session change.
@@ -173,6 +149,8 @@ export default function piInternet(pi: ExtensionAPI) {
     description:
       "Search the web using configured providers. Returns relevant results with titles, URLs, and snippets. " +
       "Leave provider unset unless the user explicitly requests a specific search engine. " +
+      "kind \"image\" searches Kagi Images instead: it returns source-page and full-resolution URLs and downloads " +
+      "thumbnails to local paths; view a thumbnail with the read tool (one image per call). " +
       "Output is truncated to 50KB or 2000 lines, whichever is hit first.",
     promptSnippet: "Search the web and return results with titles, URLs, and snippets",
     promptGuidelines: [
@@ -182,29 +160,83 @@ export default function piInternet(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "What to search for. Be specific and descriptive." }),
+      kind: Type.Optional(
+        StringEnum(["web", "image"] as const, {
+          description: "Result type (default web). image: Kagi only; returns image URLs and local thumbnail paths.",
+        }),
+      ),
       numResults: Type.Optional(
         Type.Number({ description: `Number of results to return (default ${DEFAULT_NUM_RESULTS}, max ${MAX_NUM_RESULTS})` }),
       ),
       freshness: Type.Optional(
         StringEnum(["day", "week", "month", "year"] as const, {
-          description: "Filter by recency",
+          description: "Filter by recency (web only)",
         }),
       ),
       provider: Type.Optional(
-        Type.String({ description: "Optional override. Only set this if the user explicitly requests a specific provider (brave, kagi, tavily). Otherwise leave unset." }),
+        Type.String({ description: "Optional override. Only set this if the user explicitly requests a specific provider (web: brave, kagi, tavily; image: kagi only). Otherwise leave unset." }),
       ),
     }),
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const kind = params.kind ?? "web";
+
+      // Reject rather than ignore options that image mode cannot honor, and
+      // never fall back to web search: the caller asked for images.
+      if (kind === "image") {
+        if (params.provider !== undefined && params.provider !== "kagi") {
+          return throwTruncatedToolError(
+            `provider "${params.provider}" is not supported with kind "image"; image search uses Kagi only. Omit provider or set it to "kagi".`,
+          );
+        }
+        if (params.freshness !== undefined) {
+          return throwTruncatedToolError('freshness is not supported with kind "image". Omit freshness.');
+        }
+      }
+
       if (signal?.aborted) {
-        return { content: [{ type: "text", text: "Cancelled" }], details: {} };
+        return { content: [{ type: "text", text: "Cancelled" }], details: { kind } };
       }
 
       const numResults = Math.min(Math.max(params.numResults ?? DEFAULT_NUM_RESULTS, 1), MAX_NUM_RESULTS);
 
+      if (kind === "image") {
+        onUpdate?.({
+          content: [{ type: "text", text: "Searching for images..." }],
+          details: { kind, status: "searching" },
+        });
+
+        const config = getConfig(ctx);
+        const outcome = await runImageSearch({
+          query: params.query,
+          numResults,
+          signal: signal ?? undefined,
+          socksProxy: config.fetch.socksProxy,
+          allowPrivateNetworks: config.fetch.allowPrivateNetworks,
+        }).catch(throwTruncatedToolError);
+
+        const output = await truncateToolText(formatImageResults(outcome), {
+          continuation: "Request fewer results to see omitted content.",
+        });
+
+        return {
+          content: [{ type: "text", text: output.text }],
+          details: {
+            kind,
+            provider: outcome.provider,
+            resultCount: outcome.results.length,
+            downloadedCount: outcome.downloadedCount,
+            thumbnailDir: outcome.thumbnailDir,
+            query: params.query,
+            items: outcome.results,
+            truncation: output.truncation,
+          },
+        };
+      }
+
       onUpdate?.({
         content: [{ type: "text", text: "Searching the web..." }],
-        details: { status: "searching" },
+        details: { kind, status: "searching" },
       });
 
       const { results, provider, errors, warnings } = await getSearchRouter(ctx).search({
@@ -222,6 +254,7 @@ export default function piInternet(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: output.text }],
         details: {
+          kind,
           provider,
           resultCount: results.length,
           query: params.query,
@@ -238,26 +271,55 @@ export default function piInternet(pi: ExtensionAPI) {
       const display = query.length > 60 ? query.slice(0, 57) + "..." : query;
       let text = theme.fg("toolTitle", theme.bold("web_search "));
       text += theme.fg("accent", `"${display}"`);
+      if (args.kind === "image") text += theme.fg("muted", " [image]");
       if (args.provider) text += theme.fg("muted", ` via ${args.provider}`);
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded, isPartial }, theme) {
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      // Use the call arguments for the mode: error and early partial results
+      // carry no details.
+      const isImage = context?.args?.kind === "image";
+
       if (isPartial) {
-        return new Text(theme.fg("warning", "Searching..."), 0, 0);
+        return new Text(theme.fg("warning", isImage ? "Searching for images..." : "Searching..."), 0, 0);
       }
 
-      const details = result.details as {
+      if (result.isError) {
+        const content = result.content.find((c) => c.type === "text");
+        const fallback = isImage ? "Image search failed" : "Search failed";
+        return new Text(theme.fg("error", `✗ ${content?.type === "text" ? content.text : fallback}`), 0, 0);
+      }
+
+      const details = (result.details ?? {}) as {
         resultCount?: number;
         provider?: string;
         errors?: string[];
         warnings?: string[];
-        items?: { title: string; url: string }[];
+        downloadedCount?: number;
+        thumbnailDir?: string;
+        items?: { title: string; url?: string; pageUrl?: string; width?: number; height?: number }[];
       };
+      const content = result.content.find((c) => c.type === "text");
+      const expandHint = `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;
 
-      if (result.isError) {
-        const content = result.content.find((c) => c.type === "text");
-        return new Text(theme.fg("error", `✗ ${content?.type === "text" ? content.text : "Search failed"}`), 0, 0);
+      if (isImage) {
+        let text = theme.fg("success", `${details.resultCount ?? 0} images`);
+        text += theme.fg("muted", ` via ${details.provider ?? "kagi"}`);
+        if (details.downloadedCount) {
+          text += theme.fg("muted", `, ${details.downloadedCount} thumbnail(s) downloaded`);
+        }
+        if (!expanded) {
+          if (details.thumbnailDir) text += `\n  ${theme.fg("muted", details.thumbnailDir)}`;
+          for (const item of details.items ?? []) {
+            const dims = item.width && item.height ? ` (${item.width}x${item.height})` : "";
+            text += `\n  ${theme.fg("toolOutput", item.title + dims)}`;
+            if (item.pageUrl) text += `  ${theme.fg("muted", item.pageUrl)}`;
+          }
+          return new Text(text + expandHint, 0, 0);
+        }
+        if (content?.type === "text") text += "\n\n" + theme.fg("toolOutput", content.text);
+        return new Text(text, 0, 0);
       }
 
       let text = theme.fg("success", `${details.resultCount ?? 0} results`);
@@ -274,14 +336,11 @@ export default function piInternet(pi: ExtensionAPI) {
         if (details.warnings?.length) {
           text += `\n${theme.fg("muted", details.warnings[0])}`;
         }
-        if (details.items?.length) {
-          for (const item of details.items) {
-            text += `\n  ${theme.fg("toolOutput", item.title)}`;
-            text += `  ${theme.fg("muted", item.url)}`;
-          }
+        for (const item of details.items ?? []) {
+          text += `\n  ${theme.fg("toolOutput", item.title)}`;
+          text += `  ${theme.fg("muted", item.url ?? "")}`;
         }
-        text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;
-        return new Text(text, 0, 0);
+        return new Text(text + expandHint, 0, 0);
       }
 
       if (details.warnings?.length) {
@@ -291,7 +350,6 @@ export default function piInternet(pi: ExtensionAPI) {
         text += "\n" + details.errors.map((error) => theme.fg("muted", `• ${error}`)).join("\n");
       }
 
-      const content = result.content.find((c) => c.type === "text");
       if (content?.type === "text") {
         text += "\n\n" + theme.fg("toolOutput", content.text);
       }
@@ -560,19 +618,6 @@ export default function piInternet(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("image-search", {
-    description: "Show or hide the image_search tool for the current session",
-    handler: async (_args, ctx) => {
-      setImageSearchEnabled(!imageSearchEnabled);
-      ctx.ui.notify(
-        imageSearchEnabled
-          ? "image_search tool enabled for this session"
-          : "image_search tool disabled for this session",
-        "info",
-      );
-    },
-  });
-
   pi.registerCommand("toggle-research", {
     description: "Show or hide the web_research tool for the current session",
     handler: async (_args, ctx) => {
@@ -598,124 +643,7 @@ export default function piInternet(pi: ExtensionAPI) {
     },
   });
 
-  // ── Tool 3: image_search (hidden unless PI_INTERNET_IMAGESEARCH=1 or /image-search) ──
-
-  function registerImageSearchTool() {
-    pi.registerTool({
-      name: "image_search",
-      label: "Image Search",
-      description:
-        "Search the web for images via Kagi. Returns image results (title, source page, " +
-        "full-resolution URL, dimensions) and downloads thumbnails to a local temp directory " +
-        "so you can view candidates with the read tool.",
-      promptSnippet: "Search the web for images and download thumbnails for local viewing",
-      promptGuidelines: [
-        "Use image_search to find images, photos, diagrams, or other visual assets on the web.",
-        "View downloaded thumbnails with the read tool (one image per read call); fetch the full-resolution URL with fetch_url only for chosen candidates.",
-      ],
-      parameters: Type.Object({
-        query: Type.String({ description: "Description of the images to search for." }),
-        numResults: Type.Optional(
-          Type.Number({ description: `Number of results to return (default ${DEFAULT_NUM_RESULTS}, max ${MAX_NUM_RESULTS})` }),
-        ),
-      }),
-
-      async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        if (signal?.aborted) {
-          return { content: [{ type: "text", text: "Cancelled" }], details: {} };
-        }
-
-        const numResults = Math.min(Math.max(params.numResults ?? DEFAULT_NUM_RESULTS, 1), MAX_NUM_RESULTS);
-
-        onUpdate?.({
-          content: [{ type: "text", text: "Searching for images..." }],
-          details: { status: "searching" },
-        });
-
-        const config = getConfig(ctx);
-        const outcome = await runImageSearch({
-          query: params.query,
-          numResults,
-          signal: signal ?? undefined,
-          socksProxy: config.fetch.socksProxy,
-          allowPrivateNetworks: config.fetch.allowPrivateNetworks,
-        }).catch(throwTruncatedToolError);
-
-        const output = await truncateToolText(formatImageResults(outcome), {
-          continuation: "Request fewer results to see omitted content.",
-        });
-
-        return {
-          content: [{ type: "text", text: output.text }],
-          details: {
-            provider: outcome.provider,
-            resultCount: outcome.results.length,
-            downloadedCount: outcome.downloadedCount,
-            thumbnailDir: outcome.thumbnailDir,
-            query: params.query,
-            truncation: output.truncation,
-          },
-        };
-      },
-
-      renderCall(args, theme) {
-        const query = typeof args.query === "string" ? args.query : "...";
-        const display = query.length > 60 ? query.slice(0, 57) + "..." : query;
-        let text = theme.fg("toolTitle", theme.bold("image_search "));
-        text += theme.fg("accent", `"${display}"`);
-        return new Text(text, 0, 0);
-      },
-
-      renderResult(result, { expanded, isPartial }, theme) {
-        if (isPartial) {
-          return new Text(theme.fg("warning", "Searching for images..."), 0, 0);
-        }
-
-        const details = result.details as {
-          resultCount?: number;
-          downloadedCount?: number;
-          thumbnailDir?: string;
-          provider?: string;
-        };
-
-        if (result.isError) {
-          const content = result.content.find((c) => c.type === "text");
-          return new Text(theme.fg("error", `✗ ${content?.type === "text" ? content.text : "Image search failed"}`), 0, 0);
-        }
-
-        let text = theme.fg("success", `${details.resultCount ?? 0} images`);
-        text += theme.fg("muted", ` via ${details.provider ?? "kagi"}`);
-        if (details.downloadedCount) {
-          text += theme.fg("muted", `, ${details.downloadedCount} thumbnail(s) downloaded`);
-        }
-
-        if (!expanded) {
-          if (details.thumbnailDir) {
-            text += `\n  ${theme.fg("muted", details.thumbnailDir)}`;
-          }
-          text += `\n\n${theme.fg("muted", `(${keyHint("app.tools.expand", "to expand")})`)}`;
-          return new Text(text, 0, 0);
-        }
-
-        const content = result.content.find((c) => c.type === "text");
-        if (content?.type === "text") {
-          text += "\n\n" + theme.fg("toolOutput", content.text);
-        }
-        return new Text(text, 0, 0);
-      },
-    });
-  }
-
-  // Register at setup when the env opt-in is present so the tool is active
-  // from the first session (registered tools are active by default; do not
-  // touch the active-tool list before the session exists).
-  if (isImageSearchEnvEnabled()) {
-    registerImageSearchTool();
-    imageSearchRegistered = true;
-    imageSearchEnabled = true;
-  }
-
-  // ── Tool 4: web_research (registered lazily via /toggle-research) ──
+  // ── Tool 3: web_research (registered lazily via /toggle-research) ──
   // Skip in scout subagent to prevent infinite recursion.
 
   function registerWebResearchTool() {

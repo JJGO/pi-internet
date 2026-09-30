@@ -67,7 +67,7 @@ test("PI_OFFLINE=0 does not disable pi-internet", () => {
     const extension = loadExtension();
 
     assert.deepEqual(extension.tools, ["web_search", "fetch_url"]);
-    assert.deepEqual(extension.commands, ["search-providers", "kagi-login", "image-search", "toggle-research"]);
+    assert.deepEqual(extension.commands, ["search-providers", "kagi-login", "toggle-research"]);
   } finally {
     if (previousOffline === undefined) delete process.env.PI_OFFLINE;
     else process.env.PI_OFFLINE = previousOffline;

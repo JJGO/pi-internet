@@ -8,7 +8,6 @@ import {
   searchKagiImages,
 } from "../src/search/providers/kagi-images.ts";
 import { formatImageResults, runImageSearch } from "../src/search/image-search.ts";
-import piInternet from "../src/index.ts";
 
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "kagi-images.html");
 
@@ -321,96 +320,4 @@ test("parseKagiImageResults: attribute newlines cannot inject extra markdown row
   assert.ok(!results[0].title.includes("\n"), "title has no newlines");
   assert.ok(!results[0].published?.includes("\n"), "published has no newlines");
   assert.match(results[0].title, /Real title ## 99\. Fake row/);
-});
-
-// ── Tool registration gating ────────────────────────────
-
-interface CapturedExtension {
-  tools: string[];
-  commands: Map<string, { handler(args: string, ctx: unknown): Promise<void> }>;
-  activeTools: string[];
-  sessionStartHandlers: Array<(event: unknown, ctx: unknown) => void | Promise<void>>;
-}
-
-function loadExtension(): CapturedExtension {
-  const captured: CapturedExtension = {
-    tools: [],
-    commands: new Map(),
-    activeTools: [],
-    sessionStartHandlers: [],
-  };
-  piInternet({
-    on(event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>) {
-      if (event === "session_start") captured.sessionStartHandlers.push(handler);
-    },
-    registerTool(tool: { name: string }) { captured.tools.push(tool.name); },
-    registerCommand(name: string, command: { handler(args: string, ctx: unknown): Promise<void> }) {
-      captured.commands.set(name, command);
-    },
-    getActiveTools() { return captured.activeTools; },
-    setActiveTools(names: string[]) { captured.activeTools = names; },
-  } as never);
-  return captured;
-}
-
-test("image_search: hidden by default, registered when PI_INTERNET_IMAGESEARCH=1", () => {
-  const previous = process.env.PI_INTERNET_IMAGESEARCH;
-  try {
-    delete process.env.PI_INTERNET_IMAGESEARCH;
-    assert.ok(!loadExtension().tools.includes("image_search"));
-
-    process.env.PI_INTERNET_IMAGESEARCH = "1";
-    assert.ok(loadExtension().tools.includes("image_search"));
-  } finally {
-    if (previous === undefined) delete process.env.PI_INTERNET_IMAGESEARCH;
-    else process.env.PI_INTERNET_IMAGESEARCH = previous;
-  }
-});
-
-test("image_search: /image-search toggles registration and active state", async () => {
-  const previous = process.env.PI_INTERNET_IMAGESEARCH;
-  try {
-    delete process.env.PI_INTERNET_IMAGESEARCH;
-    const extension = loadExtension();
-    assert.ok(!extension.tools.includes("image_search"));
-
-    const notifications: string[] = [];
-    const ctx = { ui: { notify(message: string) { notifications.push(message); } } };
-
-    await extension.commands.get("image-search")!.handler("", ctx);
-    assert.ok(extension.tools.includes("image_search"));
-    assert.ok(extension.activeTools.includes("image_search"));
-    assert.match(notifications[0], /enabled/);
-
-    await extension.commands.get("image-search")!.handler("", ctx);
-    assert.ok(!extension.activeTools.includes("image_search"));
-    assert.match(notifications[1], /disabled/);
-  } finally {
-    if (previous === undefined) delete process.env.PI_INTERNET_IMAGESEARCH;
-    else process.env.PI_INTERNET_IMAGESEARCH = previous;
-  }
-});
-
-test("image_search: session_start strips a toggled-on tool when the env opt-in is unset", async () => {
-  const previous = process.env.PI_INTERNET_IMAGESEARCH;
-  try {
-    delete process.env.PI_INTERNET_IMAGESEARCH;
-    const extension = loadExtension();
-    const ctx = { ui: { notify() {} } };
-
-    await extension.commands.get("image-search")!.handler("", ctx);
-    assert.ok(extension.activeTools.includes("image_search"));
-
-    // New session: the session-only toggle must not survive.
-    for (const handler of extension.sessionStartHandlers) await handler({}, ctx);
-    assert.ok(!extension.activeTools.includes("image_search"));
-
-    // With the env opt-in, session_start re-enables it instead.
-    process.env.PI_INTERNET_IMAGESEARCH = "1";
-    for (const handler of extension.sessionStartHandlers) await handler({}, ctx);
-    assert.ok(extension.activeTools.includes("image_search"));
-  } finally {
-    if (previous === undefined) delete process.env.PI_INTERNET_IMAGESEARCH;
-    else process.env.PI_INTERNET_IMAGESEARCH = previous;
-  }
 });
